@@ -1,0 +1,18 @@
+# Runtime state
+progress.json
+watcher_state.json
+
+# Output data
+data/
+logs/
+
+# Environment
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Project notes (will become README.md later)
+PROJECT_CONTEXT.md

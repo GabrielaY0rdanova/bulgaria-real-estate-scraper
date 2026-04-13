@@ -1,0 +1,8 @@
+# Core scraper
+requests==2.33.0
+beautifulsoup4==4.14.3
+lxml==6.0.2
+
+# Monitoring
+openpyxl==3.1.5
+python-dotenv==1.2.2
