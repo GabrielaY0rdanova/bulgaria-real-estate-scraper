@@ -27,7 +27,7 @@ Part of a larger **Real Estate Data Platform**: `real_estate_scraper` → `real_
 
 Combined dataset: **199,496 rows** across 2,948 unique settlements and 46 property types.
 
-The dataset is published on Kaggle: *(link coming soon)*
+The dataset is published on Kaggle: [Bulgaria Real Estate Listings](https://www.kaggle.com/datasets/gabrielagencheva/bulgaria-real-estate-listings)
 
 ---
 
