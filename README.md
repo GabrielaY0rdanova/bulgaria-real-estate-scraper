@@ -74,7 +74,7 @@ Each listing requires two HTTP requests — one to the index page and one to the
 
 | Layer | Source | Fields collected |
 |---|---|---|
-| Layer 1 | Index page | `source_id`, `listing_tier`, `listing_url`, `property_type`, `locality`, `price`, `area_m2`, `floor`, `has_photos`, `poster_type`, `agency_name`, `agency_phone` |
+| Layer 1 | Index page | `source_id`, `listing_tier`, `listing_url`, `property_type`, `locality`, `locality_type`, `area`, `price`, `area_m2`, `floor`, `has_photos`, `poster_type`, `agency_name`, `agency_phone` |
 | Layer 2 | Detail page | `construction_type`, `construction_status`, `year_built`, `gas`, `tec`, `features`, `date_posted`, `date_modified` |
 
 ### Cascade Cap Handling
@@ -118,7 +118,7 @@ Each row represents one listing at the time of scraping.
 | `region` | string | Bulgarian administrative region e.g. `"София"`, `"Варна"` (27 unique values) |
 | `locality` | string | Settlement name e.g. `"Варна"`, `"Банско"` (2,948 unique values) |
 | `locality_type` | string | `"град"`, `"село"`, or raw prefix like `"к.к."` — standardised downstream |
-| `neighbourhood` | string | Sub-area within a city e.g. `"Център"`, `"Малинова долина"`; `None` for oblast slugs |
+| `area` | string | Sub-area within a city e.g. `"Център"`, `"Малинова долина"`; `None` for oblast slugs |
 | `property_type` | string | Raw site value e.g. `"3-СТАЕН"`, `"ПАРЦЕЛ"`, `"КЪЩА"` (46 unique values) |
 | `bedrooms` | int | Always `None` at scrape time — extracted from `property_type` downstream |
 | `poster_type` | string | `"агенция"` (94%) or `"собственик"` (6%) |
@@ -208,6 +208,7 @@ All parameters live in `config.py`:
 
 - **`date_modified` unreliable** — imot.bg updates this field on internal re-indexing events, not just user edits. Do not use as a change detection signal.
 - **Duplicates in raw output** — the scraper appends without deduplication by design; this is handled in `real_estate_cleaning`.
+- **`area` field contains mixed sub-settlement types** — city-level slugs can produce values like `"м-ст Акчелар"`, `"в.з. Траката"`, `"к.к. Слънчев бряг"` alongside plain neighbourhood names like `"Център"`. Actual settlements misplaced here (`с.`/`гр.` prefix) are reclassified into `locality`/`locality_type` at scrape time. The prefix-based split into `area_name` + `area_type` is handled in `real_estate_cleaning`.
 - **`last_page_was_partial` guard** — if imot.bg throttles mid-session and serves an incomplete page, a small number of listings may be missed. Acceptable tradeoff given the site's behaviour.
 - **Full re-scrape per run** — the initial full run took ~84 hours across multiple sessions with resume support. A lighter incremental scraper (~15–17 hours) is planned as a future phase.
 - **Legal & ethics** — `robots.txt` Disallow is empty ✅, Terms of Service contain no scraping prohibition ✅, and a 1-second delay is applied between all requests. Agency phone numbers only — private individual phones are never collected (GDPR).

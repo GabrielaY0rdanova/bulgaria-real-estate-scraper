@@ -122,11 +122,11 @@ def parse_listing(div, region_entry, transaction_type):
         # --- property_type & location ---
         # Title link text looks like: "Продава 1-СТАЕН<location>град Пловдив, Център</location>"
         # property_type → everything before the <location> tag
-        # locality + neighbourhood → inside the <location> tag
+        # locality + area → inside the <location> tag
         property_type = None
         locality = None
         locality_type = None
-        neighbourhood = None
+        area = None
 
         if title_tag:
             location_tag = title_tag.find("location")
@@ -146,8 +146,8 @@ def parse_listing(div, region_entry, transaction_type):
 
                 # Bulgarian location_text looks like "гр. Банско, област Благоевград"
                 # Structure: "{locality_type_abbr}. {locality_name}, {region_text}"
-                # The part after the comma is always the administrative region — NOT a neighbourhood.
-                # Neighbourhood only appears for city slugs where location looks like:
+                # The part after the comma is always the administrative region — NOT a area.
+                # Area only appears for city slugs where location looks like:
                 # "гр. Банско, Грамадето" — second part is a sub-area of the city.
                 # For administrative region slugs: "гр. Банско, област Благоевград" — second part is the region name.
                 # We skip the region text (already known from region_entry).
@@ -155,14 +155,21 @@ def parse_listing(div, region_entry, transaction_type):
                 if "," in location_text:
                     locality_raw, second_part = location_text.split(",", 1)
                     second_part = second_part.strip()
-                    # If second part starts with "област" it's the region — not a neighbourhood
+                    # If second part starts with "област" it's the region — not an area
                     if second_part.lower().startswith("област"):
-                        neighbourhood = None
+                        area = None
+                    # If second part is a settlement (village or city), reclassify it
+                    # as locality instead of dumping it into area
+                    elif second_part.startswith("с. ") or second_part.startswith("гр. "):
+                        prefix, _, name = second_part.partition(". ")
+                        locality_type = "град" if prefix == "гр" else "село"
+                        locality = name.strip() or None
+                        area = None
                     else:
-                        neighbourhood = second_part or None
+                        area = second_part or None
                 else:
                     locality_raw = location_text
-                    neighbourhood = None
+                    area = None
 
                 # locality_raw looks like "гр. Банско" or "с. Марково" or "к.к. Слънчев бряг"
                 # Handle known prefixes; for anything else store the raw prefix as-is
@@ -249,7 +256,7 @@ def parse_listing(div, region_entry, transaction_type):
             "region":               region_entry["region"],
             "locality":             locality,
             "locality_type":        locality_type,
-            "neighbourhood":        neighbourhood,
+            "area":                 area,
             # Property
             "property_type":        property_type,
             "bedrooms":             None,   # not available on listings page
