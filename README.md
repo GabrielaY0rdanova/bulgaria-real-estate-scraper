@@ -2,10 +2,10 @@
 
 ## 🏷️ Project Badges
 
-![Python](https://img.shields.io/badge/Python-3.11-blue?logo=python&logoColor=white)
-![BeautifulSoup](https://img.shields.io/badge/BeautifulSoup4-Parsing-green)
-![Kaggle](https://img.shields.io/badge/Kaggle-Dataset-orange?logo=kaggle&logoColor=white)
-![License](https://img.shields.io/badge/License-MIT-lightgrey)
+[![Python](https://img.shields.io/badge/Python-3.11-blue?logo=python&logoColor=white)](https://www.python.org/)
+[![BeautifulSoup](https://img.shields.io/badge/BeautifulSoup-4-green?logo=python&logoColor=white)](https://www.crummy.com/software/BeautifulSoup/)
+[![Kaggle](https://img.shields.io/badge/Kaggle-Dataset-orange?logo=kaggle&logoColor=white)](https://www.kaggle.com/datasets/gabrielagencheva/bulgaria-real-estate-listings)
+[![License](https://img.shields.io/badge/License-MIT-lightgrey)](LICENSE.txt)
 
 ## 📖 Overview
 
@@ -14,7 +14,7 @@ Collects property listings across all 54 Bulgarian regions (27 administrative re
 enriching each listing with detail-page data including construction type, year built, utilities, and features.
 Outputs flat CSV files ready for downstream cleaning and analysis.
 
-Part of a larger **Real Estate Data Platform**: `real_estate_scraper` → `real_estate_cleaning` → `real_estate_analysis` → `real_estate_dashboard`
+Part of a larger **Real Estate Data Platform**: [`real_estate_scraper`](https://github.com/GabrielaY0rdanova/bulgaria-real-estate-scraper) → [`real_estate_cleaning`](https://github.com/GabrielaY0rdanova/bulgaria-real-estate-cleaning) → [`real_estate_analysis`](https://github.com/GabrielaY0rdanova/bulgaria-real-estate-analysis) → `real_estate_visualization`
 
 ---
 
@@ -231,9 +231,10 @@ All parameters live in `config.py`:
 
 This scraper is Stage 1 of a four-stage data platform:
 
+- ✅ **`bulgaria-real-estate-scraper`** — You are here
 - 🧹 **`bulgaria-real-estate-cleaning`** — Deduplication, field parsing and normalisation, PostgreSQL load
-- 🔍 **`bulgaria-real-estate-analysis`** — Price trends, regional comparisons, market insights
-- 📊 **`bulgaria-real-estate-dashboard`** — Interactive Power BI dashboard
+- 🔍 **`bulgaria-real-estate-analysis`** — Price distributions, geographic patterns, and feature uplift analysis
+- 📊 **`bulgaria-real-estate-visualization`** — Interactive Power BI dashboard
 
 ---
 
@@ -241,11 +242,9 @@ This scraper is Stage 1 of a four-stage data platform:
 
 Hi! I'm [Gabriela Yordanova](https://www.linkedin.com/in/gabriela-yordanova-837ba2124/). Check out my full portfolio 🗂️ [here](https://gabrielay0rdanova.github.io/).
 
-I have nearly 3 years of experience as a real estate agent across multiple agencies, which gives me genuine domain expertise in how the Bulgarian property market works — how listings are priced, what drives demand, and what the data actually means.
+Having worked as a real estate agent across multiple agencies for nearly 3 years, I know how imot.bg listings are structured, what the tiers mean, and why certain fields are unreliable — which shaped every design decision in this scraper.
 
-This project is part of a four-stage **Real Estate Data Platform** I'm building end-to-end, demonstrating my skills in **Python, web scraping, data engineering, and pipeline design**.
-
-*This project is part of my portfolio showcasing data engineering and scraping skills.*
+This project is Stage 1 of a four-stage **Real Estate Data Platform** I'm building end-to-end. The scraper handles cascade cap logic, resume support, and detail-page enrichment across 192,000+ listings — demonstrating my skills in **Python, web scraping, and resilient pipeline design**.
 
 ---
 
