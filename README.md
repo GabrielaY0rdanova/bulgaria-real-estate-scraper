@@ -231,10 +231,10 @@ All parameters live in `config.py`:
 
 This scraper is Stage 1 of a four-stage data platform:
 
-- ✅ **`bulgaria-real-estate-scraper`** — You are here
-- 🧹 **`bulgaria-real-estate-cleaning`** — Deduplication, field parsing and normalisation, PostgreSQL load
-- 🔍 **`bulgaria-real-estate-analysis`** — Price distributions, geographic patterns, and feature uplift analysis
-- 📊 **`bulgaria-real-estate-visualization`** — Interactive Power BI dashboard
+- ✅ `bulgaria-real-estate-scraper` — You are here
+- ✅ `bulgaria-real-estate-cleaning` — Deduplication, field parsing and normalisation, PostgreSQL load
+- ✅ `bulgaria-real-estate-analysis` — Price distributions, geographic patterns, and feature uplift analysis
+- ✅ `bulgaria-real-estate-visualization` — Interactive Power BI dashboard
 
 ---
 
