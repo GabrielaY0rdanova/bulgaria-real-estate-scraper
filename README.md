@@ -7,6 +7,7 @@
 [![Kaggle](https://img.shields.io/badge/Kaggle-Dataset-orange?logo=kaggle&logoColor=white)](https://www.kaggle.com/datasets/gabrielagencheva/bulgaria-real-estate-listings)
 [![License](https://img.shields.io/badge/License-MIT-lightgrey)](LICENSE.txt)
 
+
 ## 📖 Overview
 
 A modular Python scraper for [imot.bg](https://www.imot.bg), Bulgaria's largest real estate portal.
@@ -16,27 +17,27 @@ Outputs flat CSV files ready for downstream cleaning and analysis.
 
 Part of a larger **Real Estate Data Platform**: [`real_estate_scraper`](https://github.com/GabrielaY0rdanova/bulgaria-real-estate-scraper) → [`real_estate_cleaning`](https://github.com/GabrielaY0rdanova/bulgaria-real-estate-cleaning) → [`real_estate_analysis`](https://github.com/GabrielaY0rdanova/bulgaria-real-estate-analysis) → `real_estate_visualization`
 
----
 
 ## 📊 Dataset
 
-| File | Rows | Transaction type |
-|---|---|---|
-| `prodazhbi_06_04_2026.csv` | 160,886 | Sales |
-| `naemi_10_04_2026.csv` | 38,610 | Rentals |
+| File | Rows | Transaction type | Run |
+|---|---|---|---|
+| `prodazhbi_06_04_2026.csv` | 160,886 | Sales | Full scrape |
+| `naemi_10_04_2026.csv` | 38,610 | Rentals | Full scrape |
+| `prodazhbi_05_05_2026.csv` | 45,186 | Sales | Incremental update |
+| `naemi_07_05_2026.csv` | 19,038 | Rentals | Incremental update |
 
-Combined dataset: **199,496 rows** across 2,948 unique settlements and 46 property types.
+Combined dataset: **263,720 rows** across 2,948 unique settlements and 46 property types.
 
 The dataset is published on Kaggle: [Bulgaria Real Estate Listings](https://www.kaggle.com/datasets/gabrielagencheva/bulgaria-real-estate-listings)
 
----
 
 ## 🗂️ Project Structure
 
 ```
 real_estate_scraper/
 │
-├── main.py                     # Orchestration: cascade logic, CSV output, resume
+├── main.py                     # Full scraper — cascade logic, CSV output, resume
 ├── config.py                   # All scraping parameters, headers, price ranges
 ├── regions.py                  # 54 Bulgarian regions (slug + name)
 ├── requirements.txt
@@ -48,23 +49,29 @@ real_estate_scraper/
 ├── logs/                       # Log files (gitignored)
 │
 ├── monitoring/
-│   ├── log_watcher.py          # Telegram notification bot
+│   ├── log_watcher.py          # Telegram notification bot (full scraper)
 │   └── time_estimates.xlsx     # Per-region ETAs
 │
 ├── tests/
 │   ├── test_detail_parser.py
 │   └── test_url_builder.py
 │
-└── scraper/
-    ├── fetcher.py              # HTTP requests, retry logic, soft-block detection
-    ├── parser.py               # Index page parsing
-    ├── detail_parser.py        # Detail page parsing
-    ├── url_builder.py          # URL construction for all cascade levels
-    ├── validator.py            # Field validation and sanity checks
-    └── progress.py             # Resume state (read/write progress.json)
+├── scraper/
+│   ├── fetcher.py              # HTTP requests, retry logic, soft-block detection
+│   ├── parser.py               # Index page parsing
+│   ├── detail_parser.py        # Detail page parsing
+│   ├── url_builder.py          # URL construction for all cascade levels
+│   ├── validator.py            # Field validation and sanity checks
+│   └── progress.py             # Resume state (read/write progress.json)
+│
+└── light_scraper/
+    ├── main.py                 # Incremental scraper — two-pass architecture
+    ├── comparator.py           # Classifies listings: new / changed / unchanged / reappeared / missing
+    ├── db.py                   # PostgreSQL queries for active/inactive listing lookups
+    ├── progress.py             # Resume state for light scraper runs
+    └── log_watcher.py          # Telegram notification bot (light scraper)
 ```
 
----
 
 ## 🏗️ Architecture
 
@@ -96,7 +103,23 @@ Before scraping any URL, a **pre-flight check** fetches page 1 and inspects the 
 
 After each page is saved, `progress.json` records the current position (transaction type, region, property type, price bucket, page number). On restart, the scraper picks up exactly where it left off — no data is re-scraped or lost.
 
----
+### Two-Scraper Architecture
+
+The platform uses two complementary scrapers:
+
+| | Full Scraper (`main.py`) | Light Scraper (`light_scraper/main.py`) |
+|---|---|---|
+| **Purpose** | Initial full dataset collection | Incremental updates after the full scrape |
+| **Runtime** | ~84 hours | ~40 hours |
+| **Approach** | Scrapes all regions, all pages, all listings | Two-pass: index-only comparison + rolling detail refresh |
+| **DB required** | No — writes flat CSV only | Yes — compares against PostgreSQL to detect changes |
+| **Output** | Raw CSV files | Raw CSV files (new, changed, reappeared listings only) |
+
+**Light scraper — two-pass design:**
+
+- **Pass 1** — scrapes index pages only (no detail fetches), compares each listing against the DB by `source_id` and price, and classifies it as new, changed, unchanged, reappeared, or missing. Only new, changed, and reappeared listings get a detail page fetch.
+- **Pass 2** — rolling detail refresh: re-fetches detail pages for the oldest 5% of active listings to catch changes that price alone cannot signal (construction status, features, etc.).
+
 
 ## 🔄 Scraping Workflow
 
@@ -107,7 +130,6 @@ After each page is saved, `progress.json` records the current position (transact
 5. **Detail enrichment** — for each listing, visit the detail URL and merge additional fields
 6. **Validate & save** — validate required fields, append valid rows to CSV, save progress
 
----
 
 ## 🗃️ Data Schema
 
@@ -142,7 +164,6 @@ Each row represents one listing at the time of scraping.
 | `scraped_at` | string | UTC ISO timestamp of when the listing was scraped |
 | `status` | string | Always `"active"` at scrape time — updated in `real_estate_cleaning` |
 
----
 
 ## 🚀 How to Run
 
@@ -186,7 +207,44 @@ python monitoring/log_watcher.py
 
 The watcher sends real-time Telegram messages for each region start/finish, pre-flight results, per-type scraping progress, fetch failures, and a final run summary.
 
----
+
+## 🔄 Running the Light Scraper (Incremental Updates)
+
+Run the light scraper after the cleaning pipeline has loaded data into PostgreSQL.
+
+### 1. Set up database credentials
+
+Add PostgreSQL connection details to your `.env` file:
+
+```
+PGHOST=your_host
+PGPORT=5432
+PGDATABASE=your_database
+PGUSER=your_user
+PGPASSWORD=your_password
+```
+### 2. Run the light scraper
+
+```bash
+python -m light_scraper.main
+```
+
+Output CSVs are written to `data/`. Logs are written to `logs/`.
+
+### 3. Pause and resume
+
+Stop at any time and restart with the same command. It detects `light_scraper_progress.json` automatically and continues from where it left off.
+
+### 4. Monitoring (optional)
+
+Start the light scraper watcher in a separate terminal:
+
+```bash
+python -m light_scraper.log_watcher
+```
+
+The watcher sends real-time Telegram messages for each region, Pass 1 classification results (new / changed / reappeared / unchanged), Pass 2 progress, fetch failures, and a final run summary.
+
 
 ## ⚙️ Configuration
 
@@ -202,7 +260,6 @@ All parameters live in `config.py`:
 | `PRODAZHBI_PRICE_MAX` | `10,000,000` | Upper price bound for sales (EUR) |
 | `NAEMI_PRICE_MAX` | `10,000` | Upper price bound for rentals (EUR) |
 
----
 
 ## 💡 Notes
 
@@ -210,10 +267,9 @@ All parameters live in `config.py`:
 - **Duplicates in raw output** — the scraper appends without deduplication by design; this is handled in `real_estate_cleaning`.
 - **`area` field contains mixed sub-settlement types** — city-level slugs can produce values like `"м-ст Акчелар"`, `"в.з. Траката"`, `"к.к. Слънчев бряг"` alongside plain neighbourhood names like `"Център"`. Actual settlements misplaced here (`с.`/`гр.` prefix) are reclassified into `locality`/`locality_type` at scrape time. The prefix-based split into `area_name` + `area_type` is handled in `real_estate_cleaning`.
 - **`last_page_was_partial` guard** — if imot.bg throttles mid-session and serves an incomplete page, a small number of listings may be missed. Acceptable tradeoff given the site's behaviour.
-- **Full re-scrape per run** — the initial full run took ~84 hours across multiple sessions with resume support. A lighter incremental scraper (~15–17 hours) is planned as a future phase.
+- **Full re-scrape vs incremental** — the initial full run took ~84 hours across multiple sessions with resume support. Subsequent runs use the light scraper (~40 hours) which only fetches new, changed, and reappeared listings.
 - **Legal & ethics** — `robots.txt` Disallow is empty ✅, Terms of Service contain no scraping prohibition ✅, and a 1-second delay is applied between all requests. Agency phone numbers only — private individual phones are never collected (GDPR).
 
----
 
 ## 🛠️ Technologies Used
 
@@ -225,7 +281,6 @@ All parameters live in `config.py`:
 - **python-dotenv** — Telegram credentials management
 - **openpyxl** — per-region ETA estimates from Excel
 
----
 
 ## 🚀 Upcoming Projects
 
@@ -236,7 +291,6 @@ This scraper is Stage 1 of a four-stage data platform:
 - ✅ `bulgaria-real-estate-analysis` — Price distributions, geographic patterns, and feature uplift analysis
 - ✅ `bulgaria-real-estate-visualization` — Interactive Power BI dashboard
 
----
 
 ## 👩‍💻 About Me
 
@@ -244,9 +298,8 @@ Hi! I'm [Gabriela Yordanova](https://www.linkedin.com/in/gabriela-yordanova-837b
 
 Having worked as a real estate agent across multiple agencies for nearly 3 years, I know how imot.bg listings are structured, what the tiers mean, and why certain fields are unreliable — which shaped every design decision in this scraper.
 
-This project is Stage 1 of a four-stage **Real Estate Data Platform** I'm building end-to-end. The scraper handles cascade cap logic, resume support, and detail-page enrichment across 192,000+ listings — demonstrating my skills in **Python, web scraping, and resilient pipeline design**.
+This project is Stage 1 of a four-stage **Real Estate Data Platform** I'm building end-to-end. It includes two scrapers: a full scraper handling cascade cap logic, resume support, and detail-page enrichment across 263,000+ listings, and a light scraper for incremental updates with DB-backed change detection — demonstrating my skills in **Python, web scraping, and resilient pipeline design**.
 
----
 
 ## 🛡️ License
 

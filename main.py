@@ -63,7 +63,7 @@ def setup_logging():
 # bedrooms is always None at this stage (not available on the listings or detail
 # page) and is populated downstream in real_estate_cleaning.
 CSV_COLUMNS = [
-    "region", "locality", "locality_type", "neighbourhood",
+    "region", "locality", "locality_type", "area",
     "property_type", "bedrooms",
     "poster_type", "agency_name",
     "price", "area_m2", "floor",
