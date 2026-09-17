@@ -3,6 +3,7 @@
 import requests
 import time
 import logging
+import threading
 
 from bs4 import BeautifulSoup
 
@@ -11,6 +12,17 @@ from config import HEADERS, REQUEST_DELAY, RETRY_DELAY, MAX_RETRIES, SOFT_BLOCK_
 logger = logging.getLogger(__name__)
 
 MIN_PAGE_SIZE = 5000    # bytes — anything smaller is definitely not a real page
+_thread_state = threading.local()
+
+
+def _get_session() -> requests.Session:
+    """Return one reusable HTTP session per worker thread."""
+    session = getattr(_thread_state, "session", None)
+    if session is None:
+        session = requests.Session()
+        session.headers.update(HEADERS)
+        _thread_state.session = session
+    return session
 
 
 def _is_valid_content(html: str, page_type: str | None) -> bool:
@@ -53,7 +65,12 @@ def _is_valid_content(html: str, page_type: str | None) -> bool:
     return True
 
 
-def fetch_page(url: str, page_type: str | None = None, last_page_was_partial: bool = False) -> str | None:
+def fetch_page(
+    url: str,
+    page_type: str | None = None,
+    last_page_was_partial: bool = False,
+    reuse_connection: bool = False,
+) -> str | None:
     """
     Fetch a single page and return its HTML content.
     Returns HTML string if successful, None if all retries failed.
@@ -77,7 +94,10 @@ def fetch_page(url: str, page_type: str | None = None, last_page_was_partial: bo
         try:
             logger.info(f"Fetching: {url} (attempt {attempt}/{MAX_RETRIES})")
 
-            response = requests.get(url, headers=HEADERS, timeout=15)
+            if reuse_connection:
+                response = _get_session().get(url, timeout=15)
+            else:
+                response = requests.get(url, headers=HEADERS, timeout=15)
 
             # Hard block
             if response.status_code == 403:

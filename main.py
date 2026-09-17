@@ -368,7 +368,9 @@ def preflight_check(
     property_type: str | None = None,
     price_min: int | None = None,
     price_max: int | None = None,
-) -> bool:
+    return_html: bool = False,
+    reuse_connection: bool = False,
+) -> bool | tuple[bool, str | None]:
     """
     Fetch page 1 of a URL combination and check whether it shows "1000+".
     Used before any real scraping to decide which cascade level to start at,
@@ -377,6 +379,8 @@ def preflight_check(
     Returns:
         True  — "1000+" detected, cap is hit
         False — under cap, or fetch failed (safe to attempt normal scrape)
+        When return_html=True, returns (capped, html). This lets callers reuse
+        page 1 instead of downloading the same URL again.
     """
     url = build_listings_url(transaction_type, slug, page=1,
                              property_type=property_type,
@@ -387,14 +391,14 @@ def preflight_check(
         label += f" [{price_min}-{price_max}]"
     logger.info(f"Pre-flight check: {url}")
 
-    html = fetch_page(url, page_type="listings")
+    html = fetch_page(url, page_type="listings", reuse_connection=reuse_connection)
     if html is None:
         logger.warning(f"Pre-flight fetch failed for {label} — assuming no cap.")
-        return False
+        return (False, None) if return_html else False
 
     capped = is_capped(html)
     logger.info(f"Pre-flight result for {label}: {'CAPPED' if capped else 'under cap'}")
-    return capped
+    return (capped, html) if return_html else capped
 
 
 def scrape_region(

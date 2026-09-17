@@ -13,6 +13,54 @@ logger = logging.getLogger(__name__)
 
 PROGRESS_FILE = "light_scraper_progress.json"
 
+REQUIRED_FIELDS = {
+    "pass_number": int,
+    "output_path": str,
+    "transaction_type": str,
+    "run_id": str,
+    "run_dir": str,
+}
+
+
+def _is_valid_progress(progress: object) -> bool:
+    if not isinstance(progress, dict):
+        return False
+    if not all(isinstance(progress.get(key), value_type) for key, value_type in REQUIRED_FIELDS.items()):
+        return False
+    if progress["pass_number"] not in (1, 2):
+        return False
+    if progress["transaction_type"] not in ("prodazhbi", "naemi"):
+        return False
+    if not all(progress[field].strip() for field in ("output_path", "run_id", "run_dir")):
+        return False
+    if progress["pass_number"] == 1:
+        return (
+            isinstance(progress.get("slug"), str)
+            and bool(progress["slug"].strip())
+            and isinstance(progress.get("page"), int)
+            and progress["page"] >= 0
+        )
+    return isinstance(progress.get("pass2_index"), int) and progress["pass2_index"] >= 0
+
+
+def _write_progress(progress: dict) -> None:
+    temp_path = f"{PROGRESS_FILE}.tmp"
+    try:
+        with open(temp_path, "w", encoding="utf-8") as f:
+            json.dump(progress, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, PROGRESS_FILE)
+        logger.debug(f"Light scraper progress saved: {progress}")
+    except OSError as e:
+        logger.error(f"Failed to save light scraper progress file: {e}")
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except OSError:
+            logger.warning(f"Failed to remove temporary progress file: {temp_path}")
+        raise
+
 
 def load_progress() -> dict | None:
     """
@@ -29,10 +77,13 @@ def load_progress() -> dict | None:
     try:
         with open(PROGRESS_FILE, "r", encoding="utf-8") as f:
             progress = json.load(f)
+        if not _is_valid_progress(progress):
+            logger.warning("Progress file is missing safe resume fields — starting fresh run.")
+            return None
         logger.info(f"Resumed from progress file: {progress}")
         return progress
 
-    except (json.JSONDecodeError, KeyError) as e:
+    except (json.JSONDecodeError, OSError) as e:
         logger.warning(f"Progress file corrupted ({e}) — starting fresh run.")
         return None
 
@@ -43,6 +94,8 @@ def save_progress(
     page: int,
     output_path: str,
     transaction_type: str,
+    run_id: str,
+    run_dir: str,
     property_type: str | None = None,
     price_min: int | None = None,
     price_max: int | None = None,
@@ -72,21 +125,22 @@ def save_progress(
         "price_max":      price_max,
         "progress_key":   progress_key,
         "transaction_type": transaction_type,
+        "run_id":           run_id,
+        "run_dir":          run_dir,
     }
-
-    try:
-        with open(PROGRESS_FILE, "w", encoding="utf-8") as f:
-            json.dump(progress, f, ensure_ascii=False, indent=2)
-        logger.debug(f"Light scraper progress saved: {progress}")
-
-    except OSError as e:
-        logger.error(f"Failed to save light scraper progress file: {e}")
+    _write_progress(progress)
 
 
-def save_progress_pass2(index: int, output_path: str, transaction_type: str):
+def save_progress_pass2(
+    index: int,
+    output_path: str,
+    transaction_type: str,
+    run_id: str,
+    run_dir: str,
+):
     """
     Save Pass 2 progress to light_scraper_progress.json.
-    Called every 100 listings during the rolling detail refresh.
+    Called after each detail batch during the rolling refresh.
 
     Args:
         index:       number of listings processed so far
@@ -97,15 +151,10 @@ def save_progress_pass2(index: int, output_path: str, transaction_type: str):
         "pass2_index":      index,
         "output_path":      output_path,
         "transaction_type": transaction_type,
+        "run_id":           run_id,
+        "run_dir":          run_dir,
     }
-
-    try:
-        with open(PROGRESS_FILE, "w", encoding="utf-8") as f:
-            json.dump(progress, f, ensure_ascii=False, indent=2)
-        logger.debug(f"Pass 2 progress saved: index={index}")
-
-    except OSError as e:
-        logger.error(f"Failed to save Pass 2 progress file: {e}")
+    _write_progress(progress)
 
 
 def clear_progress():

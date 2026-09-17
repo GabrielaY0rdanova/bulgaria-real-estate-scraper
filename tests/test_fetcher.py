@@ -127,3 +127,26 @@ def test_timeout_is_retried_then_returns_none(monkeypatch):
     assert fetcher.fetch_page("https://example.test/timeout") is None
     assert len(calls) == 2
     assert sleeps == [fetcher.RETRY_DELAY, fetcher.RETRY_DELAY]
+
+
+def test_reusable_connection_uses_session_without_reapplying_headers(monkeypatch):
+    html = _large_html('<div id="ida123"></div>')
+    calls = []
+
+    class FakeSession:
+        def get(self, url, timeout):
+            calls.append((url, timeout))
+            return _response(html=html)
+
+    monkeypatch.setattr(fetcher, "_get_session", lambda: FakeSession())
+    monkeypatch.setattr(fetcher.requests, "get", lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("requests.get should not be used")
+    ))
+    monkeypatch.setattr(fetcher.time, "sleep", lambda _seconds: None)
+
+    assert fetcher.fetch_page(
+        "https://example.test/listings",
+        page_type="listings",
+        reuse_connection=True,
+    ) == html
+    assert calls == [("https://example.test/listings", 15)]

@@ -2,35 +2,51 @@
 # real_estate_scraper — Light Scraper — Main
 # Purpose: Incremental scraper for imot.bg. Two-pass architecture:
 #          Pass 1 — index-only scrape, compare against DB, collect changes.
-#          Pass 2 — rolling detail refresh for oldest 10% of active listings.
+#          Pass 2 — rolling detail refresh for oldest 5% of eligible listings.
 #          Outputs raw CSV files consumed by the real_estate_cleaning pipeline.
 # Run:     python -m light_scraper.main
 # =============================================================================
 
-import csv
 import logging
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 
 from config import (
-    OUTPUT_DIR, LOG_DIR, TRANSACTION_TYPES,
+    OUTPUT_DIR, TRANSACTION_TYPES,
     PROPERTY_TYPES,
     PRODAZHBI_PRICE_MIN, PRODAZHBI_PRICE_MAX,
     NAEMI_PRICE_MIN, NAEMI_PRICE_MAX,
 )
 from regions import REGIONS
 from scraper.fetcher import fetch_page
-from scraper.parser import parse_listings_page, is_capped
+from scraper.parser import parse_listings_page
 from scraper.detail_parser import parse_detail_page
 from scraper.url_builder import build_listings_url
 from scraper.validator import filter_valid_listings, is_valid_listing
 from light_scraper.db import get_connection, fetch_active_listings, fetch_inactive_listings, fetch_pass2_listings
 from light_scraper.comparator import classify_listings, compute_missing, NEW, CHANGED, UNCHANGED, REAPPEARED, MISSING
 from light_scraper.progress import load_progress, save_progress, save_progress_pass2, clear_progress
+from light_scraper.run_state import (
+    ActionStore,
+    IndexListingStore,
+    ListingRowStore,
+    Pass2SelectionStore,
+    SeenIdStore,
+    can_compute_missing,
+    clear_unit_failure,
+    create_run,
+    finish_run,
+    finish_pass1,
+    finish_transaction,
+    load_manifest,
+    mark_region_complete,
+    mark_unit_failed,
+    save_manifest,
+)
 
 from main import (
-    setup_logging, get_output_path, write_header, append_listings,
-    scrape_pages, scrape_price_buckets, preflight_check,
+    setup_logging, write_header, append_listings, preflight_check,
 )
 
 logger = logging.getLogger(__name__)
@@ -64,6 +80,8 @@ def run_pass1(
     active_in_db: dict,
     inactive_in_db: set,
     resume: dict | None,
+    run_dir=None,
+    manifest: dict | None = None,
 ) -> dict:
     """
     Scrape all index pages for all regions without fetching detail pages.
@@ -76,7 +94,11 @@ def run_pass1(
             "missing":         list of { source_id, listing_id } — computed at end,
         }
     """
-    all_scraped_ids: set = set()
+    seen_store = SeenIdStore(run_dir, transaction_type) if run_dir else None
+    index_store = IndexListingStore(run_dir, transaction_type) if run_dir else None
+    row_store = ListingRowStore(run_dir, transaction_type) if run_dir else None
+    action_store = ActionStore(run_dir, transaction_type) if run_dir else None
+    all_scraped_ids: set = set(seen_store.ids) if seen_store else set()
 
     price_min = PRODAZHBI_PRICE_MIN if transaction_type == "prodazhbi" else NAEMI_PRICE_MIN
     price_max = PRODAZHBI_PRICE_MAX if transaction_type == "prodazhbi" else NAEMI_PRICE_MAX
@@ -85,6 +107,17 @@ def run_pass1(
 
     for region_entry in REGIONS:
         slug = region_entry["slug"]
+
+        completed_regions = (
+            manifest["transactions"][transaction_type]["completed_regions"]
+            if manifest is not None
+            else []
+        )
+        if slug in completed_regions:
+            logger.info(f"Pass 1 — skipping manifest-complete region: {slug}")
+            if catching_up and resume and slug == resume.get("slug"):
+                catching_up = False
+            continue
 
         if catching_up:
             if slug != resume["slug"]:
@@ -95,7 +128,7 @@ def run_pass1(
 
         logger.info(f"Pass 1 — scraping index pages: {slug} | {transaction_type}")
 
-        region_capped = preflight_check(transaction_type, slug)
+        region_capped, preflight_html = _preflight_with_html(transaction_type, slug)
 
         if not region_capped:
             listings = _scrape_index_pages(
@@ -104,6 +137,11 @@ def run_pass1(
                 progress_key=slug,
                 pass_number=1,
                 output_path=output_path,
+                seen_store=seen_store,
+                index_store=index_store,
+                manifest=manifest,
+                run_dir=run_dir,
+                initial_html=preflight_html,
             )
         else:
             listings = _scrape_index_pages_cascade(
@@ -111,7 +149,27 @@ def run_pass1(
                 price_min=price_min, price_max=price_max,
                 resume=resume,
                 output_path=output_path,
+                seen_store=seen_store,
+                index_store=index_store,
+                manifest=manifest,
+                run_dir=run_dir,
             )
+
+        if manifest is not None:
+            region_failed = any(
+                failure["unit"] == slug
+                or failure["unit"].startswith(f"{slug}:")
+                or failure["unit"].startswith(f"{slug}/")
+                for failure in manifest["transactions"][transaction_type]["failed_units"]
+            )
+            if region_failed:
+                raise RuntimeError(
+                    f"Pass 1 stopped after an incomplete scan unit in {slug}. "
+                    "Resume the same run after the fetch problem is resolved."
+                )
+
+        if index_store:
+            listings = index_store.rows_for_region(slug)
 
         # Classify this region's listings
         region_results = classify_listings(listings, active_in_db, inactive_in_db)
@@ -119,7 +177,19 @@ def run_pass1(
         # Track all scraped source_ids for global MISSING computation later
         all_scraped_ids.update(l["source_id"] for l in listings if l.get("source_id"))
 
-        # Strip internal tracking fields from CHANGED listings before writing to CSV
+        pending_actions = []
+        for action in (NEW, CHANGED, REAPPEARED):
+            for listing in region_results[action]:
+                pending_actions.append({
+                    "source_id": listing.get("source_id"),
+                    "listing_id": listing.get("listing_id"),
+                    "action": action,
+                    "old_price": listing.get("old_price"),
+                    "new_price": listing.get("price"),
+                    "observed_at": listing.get("scraped_at") or datetime.now(timezone.utc).isoformat(),
+                })
+
+        # Strip internal tracking fields from CHANGED listings before writing raw rows
         for listing in region_results[CHANGED]:
             listing.pop("old_price", None)
             listing.pop("listing_id", None)
@@ -133,7 +203,15 @@ def run_pass1(
         if needs_detail:
             enriched = enrich_with_detail(needs_detail)
             valid = filter_valid_listings(enriched)
-            append_listings(output_path, valid)
+            if row_store and action_store:
+                row_store.upsert(valid)
+                valid_ids = {listing["source_id"] for listing in valid}
+                action_store.upsert([
+                    action for action in pending_actions
+                    if action["source_id"] in valid_ids
+                ])
+            else:
+                append_listings(output_path, valid)
             logger.info(
                 f"Pass 1 — {slug}: saved {len(valid)} listings "
                 f"({len(region_results[NEW])} new | "
@@ -147,8 +225,44 @@ def run_pass1(
                 f"({len(region_results[UNCHANGED])} unchanged)"
             )
 
+        if manifest is not None:
+            counts = manifest["transactions"][transaction_type]["counts"]
+            for action in (NEW, CHANGED, UNCHANGED, REAPPEARED):
+                counts[action] += len(region_results[action])
+            counts["output_rows"] = len(row_store.rows) if row_store else (
+                counts["output_rows"] + (len(valid) if needs_detail else 0)
+            )
+            mark_region_complete(manifest, transaction_type, slug)
+            save_manifest(run_dir, manifest)
+
     # Compute MISSING once — after all regions have been scraped
-    missing = compute_missing(all_scraped_ids, active_in_db)
+    if seen_store:
+        all_scraped_ids = set(seen_store.ids)
+
+    if manifest is not None:
+        pass1_complete = finish_pass1(manifest, transaction_type)
+        save_manifest(run_dir, manifest)
+        missing = compute_missing(all_scraped_ids, active_in_db) if pass1_complete else []
+        if pass1_complete:
+            manifest["transactions"][transaction_type]["counts"][MISSING] = len(missing)
+            if row_store and action_store:
+                observed_at = datetime.now(timezone.utc).isoformat()
+                action_store.upsert([
+                    {
+                        "source_id": listing["source_id"],
+                        "listing_id": listing.get("listing_id"),
+                        "action": MISSING,
+                        "old_price": None,
+                        "new_price": None,
+                        "observed_at": observed_at,
+                    }
+                    for listing in missing
+                ])
+                row_store.export_csv(CSV_COLUMNS)
+                action_store.export_csv()
+            save_manifest(run_dir, manifest)
+    else:
+        missing = compute_missing(all_scraped_ids, active_in_db)
 
     return {"all_scraped_ids": all_scraped_ids, "missing": missing}
 
@@ -163,6 +277,11 @@ def _scrape_index_pages(
     property_type: str | None = None,
     price_min: int | None = None,
     price_max: int | None = None,
+    seen_store=None,
+    index_store=None,
+    manifest: dict | None = None,
+    run_dir=None,
+    initial_html: str | None = None,
 ) -> list[dict]:
     """
     Scrape all index pages for one URL combination.
@@ -172,8 +291,9 @@ def _scrape_index_pages(
     start = resume_page + 1 if resume_page is not None else 1
     all_listings = []
     last_page_count = 40
+    ended_naturally = False
 
-    from config import MAX_PAGES, START_PAGE
+    from config import MAX_PAGES
     for page in range(start, start + MAX_PAGES):
         url = build_listings_url(
             transaction_type, slug, page,
@@ -182,21 +302,70 @@ def _scrape_index_pages(
             price_max=price_max,
         )
         logger.info(f"Pass {pass_number} — page {page}: {url}")
+        scan_unit = progress_key or slug
+        page_unit = f"{scan_unit}/page-{page}"
+        if manifest is not None:
+            manifest["transactions"][transaction_type]["pages_attempted"] += 1
 
-        html = fetch_page(url, page_type="listings", last_page_was_partial=(last_page_count < 40))
+        if page == 1 and start == 1 and initial_html is not None:
+            html = initial_html
+            initial_html = None
+            logger.info(f"Pass {pass_number} — reusing pre-flight HTML for page 1.")
+        else:
+            html = fetch_page(
+                url,
+                page_type="listings",
+                last_page_was_partial=(last_page_count < 40),
+                reuse_connection=True,
+            )
 
         if html is None:
-            logger.info(f"Pass {pass_number} — no more pages for {slug}.")
+            logger.warning(f"Pass {pass_number} — fetch failed for {page_unit}.")
+            if manifest is not None:
+                state = manifest["transactions"][transaction_type]
+                state["fetch_failures"] += 1
+                mark_unit_failed(manifest, transaction_type, page_unit, "fetch_failed")
+                save_manifest(run_dir, manifest)
+            if run_dir:
+                save_progress(
+                    pass_number=pass_number,
+                    slug=slug,
+                    page=page - 1,
+                    output_path=output_path,
+                    transaction_type=transaction_type,
+                    property_type=property_type,
+                    price_min=price_min,
+                    price_max=price_max,
+                    progress_key=progress_key,
+                    run_id=Path(run_dir).name,
+                    run_dir=str(run_dir),
+                )
             break
 
         listings = parse_listings_page(html, region_entry, transaction_type)
 
         if not listings:
             logger.info(f"Pass {pass_number} — empty page {page} for {slug}.")
+            if manifest is not None:
+                clear_unit_failure(manifest, transaction_type, page_unit)
+                save_manifest(run_dir, manifest)
+            ended_naturally = True
             break
 
         last_page_count = len(listings)
         all_listings.extend(listings)
+
+        # Durable page order: IDs and index rows must reach disk before the
+        # checkpoint advances. A failed write raises and leaves this page to be
+        # retried on the next run.
+        if seen_store:
+            seen_store.append(listings, slug)
+        if index_store:
+            index_store.append(listings, slug, page_unit)
+        if manifest is not None:
+            clear_unit_failure(manifest, transaction_type, page_unit)
+            manifest["transactions"][transaction_type]["pages_completed"] += 1
+            save_manifest(run_dir, manifest)
 
         save_progress(
             pass_number=pass_number,
@@ -208,7 +377,18 @@ def _scrape_index_pages(
             price_min=price_min,
             price_max=price_max,
             progress_key=progress_key,
+            run_id=Path(run_dir).name,
+            run_dir=str(run_dir),
         )
+
+    if not ended_naturally and manifest is not None:
+        state = manifest["transactions"][transaction_type]
+        already_failed = any(item["unit"] == page_unit for item in state["failed_units"])
+        if not already_failed and state["pages_completed"] > 0:
+            unit = progress_key or slug
+            logger.warning(f"Pass {pass_number} — maximum page limit reached for {unit}.")
+            mark_unit_failed(manifest, transaction_type, unit, "max_pages_reached")
+            save_manifest(run_dir, manifest)
 
     return all_listings
 
@@ -220,6 +400,12 @@ def _scrape_index_price_buckets(
     price_min: int,
     price_max: int,
     output_path: str,
+    seen_store=None,
+    index_store=None,
+    manifest: dict | None = None,
+    run_dir=None,
+    resume_key: str | None = None,
+    resume_page: int | None = None,
 ) -> list[dict]:
     """
     Recursively binary-split the price range until each bucket is under cap.
@@ -227,23 +413,41 @@ def _scrape_index_price_buckets(
     from the full scraper but returns listings instead of writing to CSV.
     """
     mid = (price_min + price_max) // 2
+    resume_range = _price_range_from_progress_key(resume_key)
 
     if price_min >= price_max or mid == price_min:
         logger.warning(f"Price range [{price_min}-{price_max}] cannot be split further. Scraping as-is.")
+        key = f"{region_entry['slug']}:{property_type}:{price_min}-{price_max}"
         return _scrape_index_pages(
             transaction_type, region_entry,
-            resume_page=None,
-            progress_key=f"{region_entry['slug']}:{property_type}:{price_min}-{price_max}",
+            resume_page=resume_page if resume_key == key else None,
+            progress_key=key,
             pass_number=1,
             output_path=output_path,
             property_type=property_type,
             price_min=price_min,
             price_max=price_max,
+            seen_store=seen_store,
+            index_store=index_store,
+            manifest=manifest,
+            run_dir=run_dir,
         )
 
     all_listings = []
     for (lo, hi) in [(price_min, mid), (mid + 1, price_max)]:
-        bucket_capped = preflight_check(
+        key = f"{region_entry['slug']}:{property_type}:{lo}-{hi}"
+        if resume_range and hi < resume_range[0]:
+            logger.info(f"Pass 1 — skipping completed price bucket: {key}")
+            continue
+
+        contains_resume_range = bool(
+            resume_range
+            and lo <= resume_range[0]
+            and resume_range[1] <= hi
+        )
+        bucket_resume_page = resume_page if resume_key == key else None
+
+        bucket_capped, preflight_html = _preflight_with_html(
             transaction_type, region_entry["slug"],
             property_type=property_type,
             price_min=lo, price_max=hi,
@@ -255,19 +459,42 @@ def _scrape_index_price_buckets(
                 property_type=property_type,
                 price_min=lo, price_max=hi,
                 output_path=output_path,
+                seen_store=seen_store,
+                index_store=index_store,
+                manifest=manifest,
+                run_dir=run_dir,
+                resume_key=resume_key if contains_resume_range else None,
+                resume_page=resume_page if contains_resume_range else None,
             ))
         else:
             all_listings.extend(_scrape_index_pages(
                 transaction_type, region_entry,
-                resume_page=None,
-                progress_key=f"{region_entry['slug']}:{property_type}:{lo}-{hi}",
+                resume_page=bucket_resume_page,
+                progress_key=key,
                 pass_number=1,
                 output_path=output_path,
                 property_type=property_type,
                 price_min=lo,
                 price_max=hi,
+                seen_store=seen_store,
+                index_store=index_store,
+                manifest=manifest,
+                run_dir=run_dir,
+                initial_html=preflight_html,
             ))
     return all_listings
+
+
+def _price_range_from_progress_key(progress_key: str | None) -> tuple[int, int] | None:
+    if not progress_key:
+        return None
+    try:
+        range_part = progress_key.rsplit(":", 1)[1]
+        lower, upper = range_part.split("-", 1)
+        return int(lower), int(upper)
+    except (IndexError, ValueError):
+        logger.warning(f"Invalid light-scraper price progress key: {progress_key}")
+        return None
 
 
 def _scrape_index_pages_cascade(
@@ -277,6 +504,10 @@ def _scrape_index_pages_cascade(
     price_max: int,
     resume: dict | None,
     output_path: str,
+    seen_store=None,
+    index_store=None,
+    manifest: dict | None = None,
+    run_dir=None,
 ) -> list[dict]:
     """
     Run the full property-type + price cascade for a capped region,
@@ -286,10 +517,35 @@ def _scrape_index_pages_cascade(
     all_listings = []
 
     prop_cap_map = {}
+    prop_html_map = {}
     for prop_type in PROPERTY_TYPES:
-        prop_cap_map[prop_type] = preflight_check(transaction_type, slug, property_type=prop_type)
+        if (
+            resume
+            and prop_type == resume.get("property_type")
+            and resume.get("progress_key")
+        ):
+            prop_cap_map[prop_type] = True
+            prop_html_map[prop_type] = None
+        else:
+            prop_cap_map[prop_type], prop_html_map[prop_type] = _preflight_with_html(
+                transaction_type,
+                slug,
+                property_type=prop_type,
+            )
+
+    resume_property_type = resume.get("property_type") if resume else None
+    resume_price_key = resume.get("progress_key") if resume else None
+    resume_page = resume.get("page") if resume else None
+    catching_up_property = resume_property_type is not None
 
     for prop_type, prop_capped in prop_cap_map.items():
+        if catching_up_property:
+            if prop_type != resume_property_type:
+                logger.info(f"Pass 1 — skipping completed property type: {prop_type}")
+                continue
+            catching_up_property = False
+
+        is_resume_property = prop_type == resume_property_type
         if prop_capped:
             listings = _scrape_index_price_buckets(
                 transaction_type, region_entry,
@@ -297,20 +553,46 @@ def _scrape_index_pages_cascade(
                 price_min=price_min,
                 price_max=price_max,
                 output_path=output_path,
+                seen_store=seen_store,
+                index_store=index_store,
+                manifest=manifest,
+                run_dir=run_dir,
+                resume_key=resume_price_key if is_resume_property else None,
+                resume_page=resume_page if is_resume_property else None,
             )
             all_listings.extend(listings)
         else:
             listings = _scrape_index_pages(
                 transaction_type, region_entry,
-                resume_page=None,
+                resume_page=resume_page if is_resume_property and not resume_price_key else None,
                 progress_key=f"{slug}:{prop_type}",
                 pass_number=1,
                 output_path=output_path,
                 property_type=prop_type,
+                seen_store=seen_store,
+                index_store=index_store,
+                manifest=manifest,
+                run_dir=run_dir,
+                initial_html=prop_html_map[prop_type],
             )
             all_listings.extend(listings)
 
     return all_listings
+
+
+def _preflight_with_html(*args, **kwargs) -> tuple[bool, str | None]:
+    """Run a preflight and retain page 1 for the subsequent index scan."""
+    result = preflight_check(
+        *args,
+        **kwargs,
+        return_html=True,
+        reuse_connection=True,
+    )
+    # Keep compatibility with simple test doubles and older callers that
+    # return only a boolean.
+    if isinstance(result, tuple):
+        return result
+    return bool(result), None
 
 
 # ---------------------------------------------------------------------------
@@ -329,12 +611,15 @@ def enrich_with_detail(listings: list[dict], workers: int = 3) -> list[dict]:
         detail_url = listing.get("listing_url")
         if not detail_url:
             logger.warning(f"No listing_url for source_id={listing.get('source_id')}. Skipping detail fetch.")
+            listing["_detail_fetch_ok"] = False
             return listing
-        detail_html = fetch_page(detail_url, page_type="detail")
+        detail_html = fetch_page(detail_url, page_type="detail", reuse_connection=True)
         if detail_html is None:
             logger.warning(f"Detail fetch failed for {detail_url}.")
+            listing["_detail_fetch_ok"] = False
             return listing
         listing.update(parse_detail_page(detail_html))
+        listing["_detail_fetch_ok"] = True
         return listing
 
     enriched = []
@@ -350,7 +635,14 @@ def enrich_with_detail(listings: list[dict], workers: int = 3) -> list[dict]:
 # Pass 2 — Rolling detail refresh
 # ---------------------------------------------------------------------------
 
-def run_pass2(conn, output_path: str, transaction_type: str, resume_index: int = 0):
+def run_pass2(
+    conn,
+    output_path: str,
+    transaction_type: str,
+    resume_index: int = 0,
+    run_dir=None,
+    manifest: dict | None = None,
+):
     """
     Re-fetch detail pages for the oldest 5% of active listings
     not checked in the last 30 days.
@@ -358,15 +650,37 @@ def run_pass2(conn, output_path: str, transaction_type: str, resume_index: int =
     Appends refreshed listings to the output CSV incrementally.
     Uses 3 parallel workers for detail fetching.
     """
-    listings_to_refresh = fetch_pass2_listings(conn, transaction_type)
+    row_store = ListingRowStore(run_dir, transaction_type) if run_dir else None
+    action_store = ActionStore(run_dir, transaction_type) if run_dir else None
+    selection_store = Pass2SelectionStore(run_dir, transaction_type) if run_dir else None
+
+    if selection_store and selection_store.exists():
+        listings_to_refresh = selection_store.load()
+        logger.info("Pass 2 — restored fixed selection from run files.")
+    else:
+        exclude_ids = set(row_store.rows) if row_store else set()
+        listings_to_refresh = fetch_pass2_listings(
+            conn,
+            transaction_type,
+            exclude_ids=exclude_ids,
+        )
+        if selection_store:
+            listings_to_refresh = selection_store.create(listings_to_refresh)
+
     total = len(listings_to_refresh)
     logger.info(f"Pass 2 — refreshing {total:,} listings.")
+    if manifest is not None:
+        manifest["transactions"][transaction_type]["pass2"]["selected"] = total
+        save_manifest(run_dir, manifest)
 
     if resume_index > 0:
         logger.info(f"Pass 2 — resuming from index {resume_index}.")
         listings_to_refresh = listings_to_refresh[resume_index:]
 
-    rejected_count = 0
+    rejected_count = (
+        manifest["transactions"][transaction_type]["pass2"].get("rejected", 0)
+        if manifest is not None else 0
+    )
     rejected_fields = {}
     early_warning_sent = False
 
@@ -380,12 +694,31 @@ def run_pass2(conn, output_path: str, transaction_type: str, resume_index: int =
 
         for listing in enriched_batch:
             i += 1
-            detail_url = listing.get("listing_url")
             if not listing.get("listing_url"):
                 logger.warning(f"No listing_url for source_id={listing.get('source_id')}. Skipping.")
+                rejected_count += 1
+                continue
+            if listing.get("_detail_fetch_ok") is False:
+                logger.warning(
+                    "Pass 2 detail refresh failed for source_id=%s. "
+                    "The listing will remain due for a future refresh.",
+                    listing.get("source_id"),
+                )
+                rejected_count += 1
                 continue
             if is_valid_listing(listing):
-                append_listings(output_path, [listing])
+                if row_store and action_store:
+                    row_store.upsert([listing])
+                    action_store.upsert([{
+                        "source_id": listing.get("source_id"),
+                        "listing_id": listing.get("listing_id"),
+                        "action": "refreshed",
+                        "old_price": listing.get("price"),
+                        "new_price": listing.get("price"),
+                        "observed_at": listing.get("scraped_at") or datetime.now(timezone.utc).isoformat(),
+                    }])
+                else:
+                    append_listings(output_path, [listing])
             else:
                 rejected_count += 1
                 for field in ["source_id", "listing_url", "property_type", "locality"]:
@@ -404,15 +737,46 @@ def run_pass2(conn, output_path: str, transaction_type: str, resume_index: int =
 
             if i % 100 == 0:
                 logger.info(f"Pass 2 — {i}/{total} saved")
-                save_progress_pass2(i, output_path, transaction_type)
+
+        # Rows and actions are durable before the Pass 2 checkpoint advances.
+        if run_dir:
+            if manifest is not None:
+                pass2_state = manifest["transactions"][transaction_type]["pass2"]
+                pass2_state.update({
+                    "selected": total,
+                    "completed": i,
+                    "saved": i - rejected_count,
+                    "rejected": rejected_count,
+                })
+                save_manifest(run_dir, manifest)
+            save_progress_pass2(
+                i,
+                output_path,
+                transaction_type,
+                Path(run_dir).name,
+                str(run_dir),
+            )
 
     top_field = max(rejected_fields, key=rejected_fields.get) if rejected_fields else "none"
-    saved_count = (i - resume_index) - rejected_count
+    saved_count = i - rejected_count
     logger.info(
         f"Pass 2 — summary: {total:,} processed | {saved_count:,} saved | "
         f"{rejected_count:,} rejected | top field: {top_field}"
     )
     logger.info(f"Pass 2 — complete. {total:,} listings refreshed.")
+    if row_store and action_store:
+        row_store.export_csv(CSV_COLUMNS)
+        action_store.export_csv()
+    if manifest is not None:
+        state = manifest["transactions"][transaction_type]
+        state["pass2_status"] = "complete"
+        state["pass2"].update({
+            "selected": total,
+            "completed": i,
+            "saved": saved_count,
+            "rejected": rejected_count,
+        })
+        save_manifest(run_dir, manifest)
 
 
 # ---------------------------------------------------------------------------
@@ -426,6 +790,16 @@ def main():
     logger.info(f"========== Light scraper run started at {run_start.isoformat()} ==========")
 
     progress = load_progress()
+    if progress:
+        run_dir = Path(progress["run_dir"])
+        if run_dir.name != progress["run_id"]:
+            raise ValueError("Progress run_id does not match its run directory")
+        manifest = load_manifest(run_dir)
+        if manifest["run_id"] != progress["run_id"]:
+            raise ValueError("Progress and manifest refer to different runs")
+    else:
+        run_dir, manifest = create_run(Path(OUTPUT_DIR) / "runs")
+
     conn = get_connection()
 
     try:
@@ -437,7 +811,7 @@ def main():
 
             logger.info(f"===== Transaction type: {transaction_type} =====")
 
-            output_path = get_output_path(transaction_type)
+            output_path = str(run_dir / f"{transaction_type}_rows.csv")
             if progress and progress.get("output_path") and os.path.exists(progress["output_path"]):
                 output_path = progress["output_path"]
                 logger.info(f"Resuming existing output file: {output_path}")
@@ -472,6 +846,14 @@ def main():
                     transaction_type, output_path,
                     active_in_db, inactive_in_db,
                     resume=resume,
+                    run_dir=run_dir,
+                    manifest=manifest,
+                )
+
+            if not can_compute_missing(manifest, transaction_type):
+                raise RuntimeError(
+                    f"Pass 1 is incomplete for {transaction_type}. "
+                    "Pass 2 and missing-listing updates are blocked."
                 )
 
             # Log missing listings — cleaning pipeline handles marking inactive
@@ -489,8 +871,17 @@ def main():
                 else None
             )
             resume_index = resume_pass2.get("pass2_index", 0) if resume_pass2 else 0
-            logger.info(f"===== Pass 2 — rolling detail refresh =====")
-            run_pass2(conn, output_path, transaction_type, resume_index=resume_index)
+            logger.info("===== Pass 2 — rolling detail refresh =====")
+            run_pass2(
+                conn,
+                output_path,
+                transaction_type,
+                resume_index=resume_index,
+                run_dir=run_dir,
+                manifest=manifest,
+            )
+            finish_transaction(manifest, transaction_type)
+            save_manifest(run_dir, manifest)
 
             # Clear progress after each transaction type completes
             # so the next transaction type always starts fresh
@@ -500,6 +891,8 @@ def main():
         elapsed = run_end - run_start
         logger.info(f"========== Light scraper run finished. Total time: {elapsed} ==========")
 
+        finish_run(manifest)
+        save_manifest(run_dir, manifest)
         clear_progress()
 
     finally:

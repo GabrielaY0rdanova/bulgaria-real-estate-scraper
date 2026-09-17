@@ -110,15 +110,17 @@ The platform uses two complementary scrapers:
 | | Full Scraper (`main.py`) | Light Scraper (`light_scraper/main.py`) |
 |---|---|---|
 | **Purpose** | Initial full dataset collection | Incremental updates after the full scrape |
-| **Runtime** | ~84 hours | ~40 hours |
+| **Runtime** | ~84 hours for the original collection | Depends on monthly change volume; measure from the next complete run |
 | **Approach** | Scrapes all regions, all pages, all listings | Two-pass: index-only comparison + rolling detail refresh |
 | **DB required** | No — writes flat CSV only | Yes — compares against PostgreSQL to detect changes |
-| **Output** | Raw CSV files | Raw CSV files (new, changed, reappeared listings only) |
+| **Output** | Raw CSV files | Run manifest, seen IDs, action files, and deduplicated rows for new, changed, reappeared, and refreshed listings |
 
 **Light scraper — two-pass design:**
 
 - **Pass 1** — scrapes index pages only (no detail fetches), compares each listing against the DB by `source_id` and price, and classifies it as new, changed, unchanged, reappeared, or missing. Only new, changed, and reappeared listings get a detail page fetch.
-- **Pass 2** — rolling detail refresh: re-fetches detail pages for the oldest 5% of active listings to catch changes that price alone cannot signal (construction status, features, etc.).
+- **Pass 2** — creates and persists a fixed selection from the oldest 5% of eligible active listings. It excludes listings already handled in Pass 1 and re-fetches detail pages to detect changes that price alone cannot reveal.
+
+Each light-scraper run has an immutable UTC run ID and writes its files to `data/runs/<run_id>/`. Page data reaches durable staging files before the resume checkpoint advances. If Pass 1 is incomplete, Pass 2 and missing-listing updates are blocked.
 
 
 ## 🔄 Scraping Workflow
@@ -229,11 +231,26 @@ PGPASSWORD=your_password
 python -m light_scraper.main
 ```
 
-Output CSVs are written to `data/`. Logs are written to `logs/`.
+Run files are written to `data/runs/<run_id>/`. Logs are written to `logs/`.
+
+The run is safe for downstream processing only when `manifest.json` has
+`status: "complete"`. Missing actions also require
+`allow_missing_updates: true` for the relevant transaction.
+
+Each completed light-scraper run contains:
+
+- `manifest.json`, with completion status and counters
+- transaction-specific row files
+- transaction-specific action files
+- complete Pass 1 seen-ID files
+- fixed Pass 2 selection files
+- append-only staging files used for safe resume
 
 ### 3. Pause and resume
 
-Stop at any time and restart with the same command. It detects `light_scraper_progress.json` automatically and continues from where it left off.
+Stop at any time and restart with the same command. It detects `light_scraper_progress.json`, verifies that it belongs to the same run, restores durable seen IDs and staging rows, and continues from the last persisted checkpoint.
+
+Do not delete `light_scraper_progress.json` or its matching run directory while a run is incomplete.
 
 ### 4. Monitoring (optional)
 
@@ -264,10 +281,10 @@ All parameters live in `config.py`:
 ## 💡 Notes
 
 - **`date_modified` unreliable** — imot.bg updates this field on internal re-indexing events, not just user edits. Do not use as a change detection signal.
-- **Duplicates in raw output** — the scraper appends without deduplication by design; this is handled in `real_estate_cleaning`.
+- **Duplicate sightings** — the full scraper can contain repeated sightings that cleaning deduplicates. The light scraper deduplicates its seen IDs, output rows and effective actions by `source_id` within each transaction run.
 - **`area` field contains mixed sub-settlement types** — city-level slugs can produce values like `"м-ст Акчелар"`, `"в.з. Траката"`, `"к.к. Слънчев бряг"` alongside plain neighbourhood names like `"Център"`. Actual settlements misplaced here (`с.`/`гр.` prefix) are reclassified into `locality`/`locality_type` at scrape time. The prefix-based split into `area_name` + `area_type` is handled in `real_estate_cleaning`.
 - **`last_page_was_partial` guard** — if imot.bg throttles mid-session and serves an incomplete page, a small number of listings may be missed. Acceptable tradeoff given the site's behaviour.
-- **Full re-scrape vs incremental** — the initial full run took ~84 hours across multiple sessions with resume support. Subsequent runs use the light scraper (~40 hours) which only fetches new, changed, and reappeared listings.
+- **Full re-scrape vs incremental** — the initial full run took about 84 hours. The July light run took about 46 hours across interrupted sessions. The repaired implementation removes duplicate work and reuses HTTP connections, but its new runtime must be measured during the next complete run. A regular monthly run is expected to be much shorter than a catch-up run after several missed months.
 - **Legal & ethics** — `robots.txt` Disallow is empty ✅, Terms of Service contain no scraping prohibition ✅, and a 1-second delay is applied between all requests. Agency phone numbers only — private individual phones are never collected (GDPR).
 
 
