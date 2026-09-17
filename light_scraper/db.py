@@ -110,14 +110,14 @@ def fetch_active_listings(conn, transaction_type: str) -> dict:
     }
 
 
-def fetch_inactive_listings(conn, transaction_type: str) -> set:
+def fetch_inactive_listings(conn, transaction_type: str) -> dict:
     """
-    Fetch all inactive source_ids from the DB for a given transaction type.
+    Fetch inactive source_ids and their stable listing IDs.
     Used by Pass 1 comparator to detect reappeared listings.
     """
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT source_id
+        SELECT source_id, listing_id, price
         FROM listings
         WHERE status = 'inactive'
           AND transaction_type = %s
@@ -127,7 +127,10 @@ def fetch_inactive_listings(conn, transaction_type: str) -> set:
 
     logger.info(f"Fetched {len(rows):,} inactive listings from DB.")
 
-    return {row[0] for row in rows}
+    return {
+        row[0]: {"listing_id": row[1], "price": row[2]}
+        for row in rows
+    }
 
 
 def fetch_pass2_listings(

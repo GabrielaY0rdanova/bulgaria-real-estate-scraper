@@ -158,7 +158,7 @@ def test_complete_pass1_records_missing_actions(monkeypatch, tmp_path):
     result = light_main.run_pass1(
         "prodazhbi", str(run_dir / "prodazhbi_rows.csv"),
         active_in_db={"gone": {"listing_id": 77, "price": 100}},
-        inactive_in_db=set(), resume=None, run_dir=run_dir, manifest=manifest,
+        inactive_in_db={}, resume=None, run_dir=run_dir, manifest=manifest,
     )
 
     with (run_dir / "prodazhbi_actions.csv").open(encoding="utf-8-sig", newline="") as file:
@@ -324,7 +324,7 @@ def test_pass1_output_is_deduplicated_and_completed_region_is_not_repeated(monke
         "prodazhbi",
         str(run_dir / "prodazhbi_rows.csv"),
         active_in_db={},
-        inactive_in_db=set(),
+        inactive_in_db={},
         resume=None,
         run_dir=run_dir,
         manifest=manifest,
@@ -333,7 +333,7 @@ def test_pass1_output_is_deduplicated_and_completed_region_is_not_repeated(monke
         "prodazhbi",
         str(run_dir / "prodazhbi_rows.csv"),
         active_in_db={},
-        inactive_in_db=set(),
+        inactive_in_db={},
         resume={"slug": REGION["slug"], "page": 1},
         run_dir=run_dir,
         manifest=manifest,

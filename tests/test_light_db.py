@@ -33,6 +33,18 @@ class FakeConnection:
         return self.cursor_instance
 
 
+def test_inactive_lookup_keeps_listing_id_and_last_price():
+    conn = FakeConnection(("src-9", 91, Decimal("125000")))
+
+    result = db.fetch_inactive_listings(conn, "prodazhbi")
+
+    assert result == {
+        "src-9": {"listing_id": 91, "price": Decimal("125000")}
+    }
+    assert conn.cursor_instance.closed is True
+    assert "listing_id, price" in conn.cursor_instance.executions[0][0]
+
+
 def test_pass2_query_excludes_pass1_ids_and_restores_raw_context():
     row = (
         "src-1", 42, "https://example.test/1", "VIP", Decimal("123000"), False,

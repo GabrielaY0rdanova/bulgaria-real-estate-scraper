@@ -78,7 +78,7 @@ def run_pass1(
     transaction_type: str,
     output_path: str,
     active_in_db: dict,
-    inactive_in_db: set,
+    inactive_in_db: dict,
     resume: dict | None,
     run_dir=None,
     manifest: dict | None = None,
@@ -189,10 +189,11 @@ def run_pass1(
                     "observed_at": listing.get("scraped_at") or datetime.now(timezone.utc).isoformat(),
                 })
 
-        # Strip internal tracking fields from CHANGED listings before writing raw rows
-        for listing in region_results[CHANGED]:
-            listing.pop("old_price", None)
-            listing.pop("listing_id", None)
+        # Strip action-only tracking fields before writing raw rows.
+        for action in (CHANGED, REAPPEARED):
+            for listing in region_results[action]:
+                listing.pop("old_price", None)
+                listing.pop("listing_id", None)
 
         # Enrich and write to CSV immediately — crash-safe, no data held in memory
         needs_detail = (

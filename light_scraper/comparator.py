@@ -28,7 +28,7 @@ MISSING     = "missing"       # was active, no longer visible → mark inactive
 def classify_listings(
     scraped: list[dict],
     active_in_db: dict,
-    inactive_in_db: set,
+    inactive_in_db: dict,
 ) -> dict:
     """
     Classify each scraped listing against the existing DB state.
@@ -38,7 +38,8 @@ def classify_listings(
                        each dict must have at least source_id and price
         active_in_db:  dict from db.fetch_active_listings() —
                        { source_id: { listing_id, price } }
-        inactive_in_db: set of source_ids from db.fetch_inactive_listings()
+        inactive_in_db: dict from db.fetch_inactive_listings():
+                        {source_id: {"listing_id": int, "price": number|null}}
 
     Returns:
         dict with five keys — each mapping to a list of relevant dicts:
@@ -81,7 +82,11 @@ def classify_listings(
                 results[UNCHANGED].append(listing)
 
         elif source_id in inactive_in_db:
-            results[REAPPEARED].append(listing)
+            results[REAPPEARED].append({
+                **listing,
+                "listing_id": inactive_in_db[source_id]["listing_id"],
+                "old_price": inactive_in_db[source_id]["price"],
+            })
 
         else:
             results[NEW].append(listing)
