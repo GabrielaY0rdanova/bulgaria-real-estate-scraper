@@ -3,6 +3,7 @@
 import csv
 import logging
 import os
+import time
 from datetime import datetime, timezone
 
 from config import OUTPUT_DIR, LOG_DIR, MAX_PAGES, START_PAGE, TRANSACTION_TYPES, PROPERTY_TYPES, PRODAZHBI_PRICE_MIN, PRODAZHBI_PRICE_MAX, NAEMI_PRICE_MIN, NAEMI_PRICE_MAX
@@ -131,7 +132,7 @@ def scrape_pages(
 
     Args:
         transaction_type: "prodazhbi" or "naemi"
-        region_entry:     dict with keys: country, region, slug
+        region_entry:     dict with keys: region, slug
         output_path:      path to the CSV file for this transaction type
         property_type:    property type slug for level-2 cascade (optional)
         price_min:        lower price bound for level-3 cascade (optional)
@@ -144,6 +145,13 @@ def scrape_pages(
     start = resume_page + 1 if resume_page is not None else START_PAGE
     last_page_had_listings = False
     last_page_count = 40  # conservative default; updated after each page
+    unit_started = time.perf_counter()
+    pages_completed = 0
+    total_found = 0
+    total_saved = 0
+    total_rejected = 0
+    total_detail_failed = 0
+    stop_reason = "max_pages_reached"
 
     label = slug
     if property_type:
@@ -167,6 +175,7 @@ def scrape_pages(
 
         if html is None:
             logger.warning(f"Fetch returned None on page {page} for {label}. Stopping.")
+            stop_reason = "end_after_partial_page" if last_page_count < 40 else "fetch_failed"
             break
 
         listings = parse_listings_page(html, region_entry, transaction_type)
@@ -174,21 +183,26 @@ def scrape_pages(
         if not listings:
             logger.info(f"No listings on page {page} for {label}. End of results.")
             last_page_had_listings = False
+            stop_reason = "end_of_results"
             break
 
         logger.info(f"Found {len(listings)} listings on page {page}.")
         last_page_had_listings = True
         last_page_count = len(listings)
+        total_found += len(listings)
+        detail_failed = 0
 
         # --- Detail page enrichment ---
         for listing in listings:
             detail_url = listing.get("listing_url")
             if not detail_url:
                 logger.warning(f"No listing_url for source_id={listing.get('source_id')}. Skipping detail fetch.")
+                detail_failed += 1
                 continue
             detail_html = fetch_page(detail_url, page_type="detail")
             if detail_html is None:
                 logger.warning(f"Detail fetch failed for {detail_url}. Detail fields will be None.")
+                detail_failed += 1
                 continue
             listing.update(parse_detail_page(detail_html))
 
@@ -200,6 +214,21 @@ def scrape_pages(
 
         append_listings(output_path, valid_listings)
         logger.info(f"Saved {len(valid_listings)} valid listings from page {page}.")
+        pages_completed += 1
+        total_saved += len(valid_listings)
+        total_rejected += rejected
+        total_detail_failed += detail_failed
+        logger.info(
+            "PAGE_SUMMARY label=%s transaction=%s page=%s found=%s saved=%s "
+            "rejected=%s detail_failed=%s",
+            label,
+            transaction_type,
+            page,
+            len(listings),
+            len(valid_listings),
+            rejected,
+            detail_failed,
+        )
 
         # Save progress — include progress_key to identify cascade position on resume
         save_progress(transaction_type, slug, page, output_path,
@@ -214,7 +243,35 @@ def scrape_pages(
     hit_cap = last_page_had_listings and last_page_count == 40
     if hit_cap:
         logger.warning(f"Cap likely hit for {label} — will split further.")
+        stop_reason = "possible_cap"
+    elapsed_seconds = time.perf_counter() - unit_started
+    logger.info(
+        "SCRAPE_UNIT_SUMMARY label=%s transaction=%s pages=%s found=%s saved=%s "
+        "rejected=%s detail_failed=%s stop_reason=%s elapsed_seconds=%.2f",
+        label,
+        transaction_type,
+        pages_completed,
+        total_found,
+        total_saved,
+        total_rejected,
+        total_detail_failed,
+        stop_reason,
+        elapsed_seconds,
+    )
     return hit_cap
+
+
+def _price_range_from_progress_key(progress_key: str | None) -> tuple[int, int] | None:
+    """Return the numeric price range stored at the end of a progress key."""
+    if not progress_key:
+        return None
+    try:
+        range_part = progress_key.rsplit(":", 1)[1]
+        lower, upper = range_part.split("-", 1)
+        return int(lower), int(upper)
+    except (IndexError, ValueError):
+        logger.warning(f"Invalid price progress key: {progress_key}")
+        return None
 
 
 def scrape_price_buckets(
@@ -234,26 +291,37 @@ def scrape_price_buckets(
     Recursively splits [price_min, price_max] in half if cap is hit.
     """
     mid = (price_min + price_max) // 2
+    resume_range = _price_range_from_progress_key(resume_key)
 
     # Avoid infinite recursion on degenerate ranges (e.g. min == max)
     if price_min >= price_max or mid == price_min:
         logger.warning(f"Price range [{price_min}-{price_max}] cannot be split further. Scraping as-is.")
+        key = f"{region_entry['slug']}:{property_type}:{price_min}-{price_max}"
         scrape_pages(
             transaction_type, region_entry, output_path,
             property_type=property_type,
             price_min=price_min, price_max=price_max,
+            resume_page=resume_page if resume_key == key else None,
+            progress_key=key,
         )
         return
 
     for (lo, hi) in [(price_min, mid), (mid + 1, price_max)]:
         key = f"{region_entry['slug']}:{property_type}:{lo}-{hi}"
 
-        # Resume: skip buckets already completed in a previous run
-        if resume_key and key < resume_key:
+        # Price buckets are visited from low to high. Compare their numeric
+        # bounds rather than their string keys, because lexical ordering breaks
+        # for values with different digit lengths.
+        if resume_range and hi < resume_range[0]:
             logger.info(f"Skipping completed price bucket: {key}")
             continue
 
         r_page = resume_page if (resume_key and key == resume_key) else None
+        contains_resume_range = bool(
+            resume_range
+            and lo <= resume_range[0]
+            and resume_range[1] <= hi
+        )
 
         # --- Pre-flight check before scraping this bucket ---
         # Avoids scraping up to MAX_PAGES pages just to discover the range is
@@ -270,6 +338,8 @@ def scrape_price_buckets(
                 transaction_type, region_entry, output_path,
                 property_type=property_type,
                 price_min=lo, price_max=hi,
+                resume_key=resume_key if contains_resume_range else None,
+                resume_page=resume_page if contains_resume_range else None,
             )
             continue
 
@@ -348,7 +418,7 @@ def scrape_region(
 
     Args:
         transaction_type:     "prodazhbi" or "naemi"
-        region_entry:         dict with keys: country, region, slug
+        region_entry:         dict with keys: region, slug
         output_path:          path to the CSV file for this transaction type
         resume_page:          page to resume from within the current scrape unit
         resume_property_type: property type to resume from (level-2 resume)
@@ -416,7 +486,7 @@ def scrape_region(
 
         # Carry resume state forward only for the property type we're resuming on.
         if resume_property_type and prop_type == resume_property_type:
-            r_page = resume_page if resume_price_key is None else None
+            r_page = resume_page
             r_price_key = resume_price_key
         else:
             r_page = None

@@ -25,11 +25,6 @@ HEADERS = {
 OUTPUT_DIR = "data"
 LOG_DIR = "logs"
 
-# --- Cascade scraping ---
-# If a slug (or slug+property_type) returns exactly this many listings,
-# we assume the cap was hit and we need to split further.
-CAP_THRESHOLD = 1000
-
 # All property type slugs as they appear in imot.bg URLs.
 # Used as the second dimension when a region hits the cap.
 PROPERTY_TYPES = [

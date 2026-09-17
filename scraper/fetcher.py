@@ -38,9 +38,12 @@ def _is_valid_content(html: str, page_type: str | None) -> bool:
     soup = BeautifulSoup(html, "html.parser")
 
     if page_type == "listings":
-        # At least one listing card must be present
+        # A normal page has listing cards. A genuine empty or out-of-range page
+        # can have no cards but still retains the search summary. Block and
+        # captcha pages have neither structural marker.
         found = soup.find("div", id=lambda x: x and x.startswith("ida"))
-        return found is not None
+        search_info = soup.select_one("div.SearchInfoLine")
+        return found is not None or search_info is not None
 
     if page_type == "detail":
         # Price/date block must be present

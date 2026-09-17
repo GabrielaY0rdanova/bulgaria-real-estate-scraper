@@ -3,7 +3,7 @@
 # Module for constructing listing URLs for imot.bg.
 
 
-from config import BASE_URL
+from config import BASE_URL, TRANSACTION_TYPES
 
 
 def build_listings_url(
@@ -34,6 +34,17 @@ def build_listings_url(
     Returns:
         Full URL string
     """
+    if transaction_type not in TRANSACTION_TYPES:
+        raise ValueError(f"Unsupported transaction type: {transaction_type}")
+    if not isinstance(slug, str) or not slug.strip():
+        raise ValueError("slug must be a non-empty string")
+    if page is not None and page < 1:
+        raise ValueError("page must be 1 or greater")
+    if (price_min is None) != (price_max is None):
+        raise ValueError("price_min and price_max must be provided together")
+    if price_min is not None and (price_min < 0 or price_max < price_min):
+        raise ValueError("price range must be non-negative and ordered")
+
     # Build path: base / transaction_type / slug [/ property_type] [/ p-N]
     parts = [BASE_URL.rstrip("/"), transaction_type, slug]
 

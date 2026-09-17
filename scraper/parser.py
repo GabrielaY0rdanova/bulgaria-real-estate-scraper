@@ -152,6 +152,8 @@ def parse_listing(div, region_entry, transaction_type):
                 # For administrative region slugs: "гр. Банско, област Благоевград" — second part is the region name.
                 # We skip the region text (already known from region_entry).
 
+                locality_from_second_part = False
+
                 if "," in location_text:
                     locality_raw, second_part = location_text.split(",", 1)
                     second_part = second_part.strip()
@@ -165,6 +167,7 @@ def parse_listing(div, region_entry, transaction_type):
                         locality_type = "град" if prefix == "гр" else "село"
                         locality = name.strip() or None
                         area = None
+                        locality_from_second_part = True
                     else:
                         area = second_part or None
                 else:
@@ -174,30 +177,31 @@ def parse_listing(div, region_entry, transaction_type):
                 # locality_raw looks like "гр. Банско" or "с. Марково" or "к.к. Слънчев бряг"
                 # Handle known prefixes; for anything else store the raw prefix as-is
                 # so real_estate_cleaning can normalise it downstream.
-                locality_raw = locality_raw.strip()
-                if locality_raw.startswith("град "):
-                    locality_type = "град"
-                    locality = locality_raw.removeprefix("град ").strip() or None
-                elif locality_raw.startswith("гр. "):
-                    locality_type = "град"
-                    locality = locality_raw.removeprefix("гр. ").strip() or None
-                elif locality_raw.startswith("село "):
-                    locality_type = "село"
-                    locality = locality_raw.removeprefix("село ").strip() or None
-                elif locality_raw.startswith("с. "):
-                    locality_type = "село"
-                    locality = locality_raw.removeprefix("с. ").strip() or None
-                else:
-                    # Unknown prefix (e.g. "к.к.", "вилна зона") — store raw prefix
-                    # so downstream cleaning can map it to a standard locality_type.
-                    # e.g. "к.к. Слънчев бряг" → locality_type="к.к.", locality="Слънчев бряг"
-                    parts = locality_raw.split(None, 1)
-                    if len(parts) == 2:
-                        locality_type = parts[0]
-                        locality = parts[1] or None
+                if not locality_from_second_part:
+                    locality_raw = locality_raw.strip()
+                    if locality_raw.startswith("град "):
+                        locality_type = "град"
+                        locality = locality_raw.removeprefix("град ").strip() or None
+                    elif locality_raw.startswith("гр. "):
+                        locality_type = "град"
+                        locality = locality_raw.removeprefix("гр. ").strip() or None
+                    elif locality_raw.startswith("село "):
+                        locality_type = "село"
+                        locality = locality_raw.removeprefix("село ").strip() or None
+                    elif locality_raw.startswith("с. "):
+                        locality_type = "село"
+                        locality = locality_raw.removeprefix("с. ").strip() or None
                     else:
-                        locality_type = None
-                        locality = locality_raw or None
+                        # Unknown prefix (e.g. "к.к.", "вилна зона") — store raw prefix
+                        # so downstream cleaning can map it to a standard locality_type.
+                        # e.g. "к.к. Слънчев бряг" → locality_type="к.к.", locality="Слънчев бряг"
+                        parts = locality_raw.split(None, 1)
+                        if len(parts) == 2:
+                            locality_type = parts[0]
+                            locality = parts[1] or None
+                        else:
+                            locality_type = None
+                            locality = locality_raw or None
 
         # --- price ---
         # <div class="price"><div>89 990 €<br>176 005.14 лв.</div></div>
@@ -324,7 +328,7 @@ def _extract_year(info_text):
     """
     Extract year built.
     Example: 'въведен в експлоатация 2020 г.' → 2020
-    Uses \d{4} to match exactly 4 digits — avoids matching area or floor numbers.
+    Uses four consecutive digits to avoid matching area or floor numbers.
     """
     match = re.search(r"(\d{4})\s*г\.", info_text)
     if match:

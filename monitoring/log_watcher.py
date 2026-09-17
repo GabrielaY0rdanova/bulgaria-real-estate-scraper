@@ -10,6 +10,7 @@ import requests
 from datetime import datetime
 from openpyxl import load_workbook
 from dotenv import load_dotenv
+from regions import REGIONS
 
 load_dotenv()
 
@@ -20,7 +21,7 @@ LOG_DIR = "logs"
 POLL_INTERVAL = 10
 IDLE_TIMEOUT = 300
 
-TOTAL_REGIONS = 54
+TOTAL_REGIONS = len(REGIONS)
 STATE_FILE = "watcher_state.json"
 
 # ---------------------------------------------------------------------------
@@ -28,39 +29,12 @@ STATE_FILE = "watcher_state.json"
 # Used to key estimates loaded from time_estimates.xlsx
 # ---------------------------------------------------------------------------
 
-_SLUG_ORDER = [
-    "oblast-blagoevgrad", "oblast-burgas", "oblast-varna", "oblast-veliko-tarnovo",
-    "oblast-vidin", "oblast-vratsa", "oblast-gabrovo", "oblast-dobrich",
-    "oblast-kardzhali", "oblast-kyustendil", "oblast-lovech", "oblast-montana",
-    "oblast-pazardzhik", "oblast-pernik", "oblast-pleven", "oblast-plovdiv",
-    "oblast-razgrad", "oblast-ruse", "oblast-silistra", "oblast-sliven",
-    "oblast-smolyan", "oblast-sofiya", "oblast-stara-zagora", "oblast-targovishte",
-    "oblast-haskovo", "oblast-shumen", "oblast-yambol",
-    "grad-blagoevgrad", "grad-burgas", "grad-varna", "grad-veliko-tarnovo",
-    "grad-vidin", "grad-vratsa", "grad-gabrovo", "grad-dobrich",
-    "grad-kardzhali", "grad-kyustendil", "grad-lovech", "grad-montana",
-    "grad-pazardzhik", "grad-pernik", "grad-pleven", "grad-plovdiv",
-    "grad-razgrad", "grad-ruse", "grad-silistra", "grad-sliven",
-    "grad-smolyan", "grad-sofiya", "grad-stara-zagora", "grad-targovishte",
-    "grad-haskovo", "grad-shumen", "grad-yambol",
-]
+_SLUG_ORDER = [entry["slug"] for entry in REGIONS]
 
 # Same order, Bulgarian names as they appear in the xlsx
 _BG_NAME_ORDER = [
-    "област Благоевград", "област Бургас", "област Варна", "област Велико Търново",
-    "област Видин", "област Враца", "област Габрово", "област Добрич",
-    "област Кърджали", "област Кюстендил", "област Ловеч", "област Монтана",
-    "област Пазарджик", "област Перник", "област Плевен", "област Пловдив",
-    "област Разград", "област Русе", "област Силистра", "област Сливен",
-    "област Смолян", "област София", "област Стара Загора", "област Търговище",
-    "област Хасково", "област Шумен", "област Ямбол",
-    "град Благоевград", "град Бургас", "град Варна", "град Велико Търново",
-    "град Видин", "град Враца", "град Габрово", "град Добрич",
-    "град Кърджали", "град Кюстендил", "град Ловеч", "град Монтана",
-    "град Пазарджик", "град Перник", "град Плевен", "град Пловдив",
-    "град Разград", "град Русе", "град Силистра", "град Сливен",
-    "град Смолян", "град София", "град Стара Загора", "град Търговище",
-    "град Хасково", "град Шумен", "град Ямбол",
+    f"{'област' if entry['slug'].startswith('oblast-') else 'град'} {entry['region']}"
+    for entry in REGIONS
 ]
 
 # region_name → slug  (used to normalise names that come back from the xlsx)
@@ -329,8 +303,11 @@ def load_state() -> dict:
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, IOError):
+                saved_state = json.load(f)
+            if not isinstance(saved_state, dict):
+                raise ValueError("watcher state must be a JSON object")
+            return {**default_state(), **saved_state}
+        except (json.JSONDecodeError, IOError, ValueError):
             pass
     return default_state()
 
@@ -364,11 +341,20 @@ def default_state() -> dict:
 
 
 def save_state(state: dict):
+    temp_path = f"{STATE_FILE}.tmp"
     try:
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
+        with open(temp_path, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, STATE_FILE)
     except IOError as e:
         print(f"[watcher] Could not save state: {e}")
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except OSError:
+            print(f"[watcher] Could not remove temporary state file: {temp_path}")
 
 
 def get_latest_log():
