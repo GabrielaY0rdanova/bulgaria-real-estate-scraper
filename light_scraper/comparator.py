@@ -6,6 +6,7 @@
 # =============================================================================
 
 import logging
+from decimal import Decimal, InvalidOperation
 
 logger = logging.getLogger(__name__)
 
@@ -133,25 +134,27 @@ def compute_missing(all_scraped_ids: set, active_in_db: dict) -> list[dict]:
 # Private helpers
 # ---------------------------------------------------------------------------
 
-def _parse_price(raw_price) -> float | None:
+def _parse_price(raw_price) -> Decimal | None:
     """
-    Parse a raw price string from the scraper into a float.
+    Parse a raw price string from the scraper into a Decimal.
     Returns None for price-on-request or unparseable values.
     Example: "89 990 €" → 89990.0
     """
     if raw_price is None:
         return None
+    if isinstance(raw_price, Decimal):
+        return raw_price
     if isinstance(raw_price, (int, float)):
-        return float(raw_price)
+        return Decimal(str(raw_price))
     # Strip currency symbol, spaces, and non-numeric characters
     cleaned = raw_price.replace("€", "").replace(" ", "").replace("\xa0", "").strip()
     try:
-        return float(cleaned)
-    except ValueError:
+        return Decimal(cleaned)
+    except InvalidOperation:
         return None
 
 
-def _prices_differ(price_a: float | None, price_b: float | None) -> bool:
+def _prices_differ(price_a: Decimal | None, price_b) -> bool:
     """
     Compare two prices. Two None values are considered equal (both on request).
     A float and None are considered different.
@@ -160,4 +163,7 @@ def _prices_differ(price_a: float | None, price_b: float | None) -> bool:
         return False
     if price_a is None or price_b is None:
         return True
-    return price_a != price_b
+    try:
+        return price_a != Decimal(str(price_b))
+    except InvalidOperation:
+        return True
