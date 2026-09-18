@@ -335,6 +335,25 @@ def test_pass1_resume_is_not_reused_for_later_regions():
     assert light_main._resume_for_region(resume, "grad-sofiya") is None
 
 
+def test_initialize_empty_transaction_creates_valid_noop_artifacts(tmp_path):
+    run_dir, manifest = run_state.create_run(tmp_path, run_id="run")
+
+    light_main.initialize_empty_transaction(
+        run_dir, manifest, "prodazhbi"
+    )
+
+    state = manifest["transactions"]["prodazhbi"]
+    assert state["status"] == "complete"
+    assert state["pass1_status"] == "complete"
+    assert state["pass2_status"] == "complete"
+    assert state["allow_missing_updates"] is True
+    assert state["expected_regions"] == []
+    assert run_state.ListingRowStore(run_dir, "prodazhbi").rows == {}
+    assert run_state.ActionStore(run_dir, "prodazhbi").actions == {}
+    assert run_state.SeenIdStore(run_dir, "prodazhbi").ids == set()
+    assert run_state.Pass2SelectionStore(run_dir, "prodazhbi").load() == []
+
+
 def test_pass1_output_is_deduplicated_and_completed_region_is_not_repeated(monkeypatch, tmp_path):
     run_dir, manifest = run_state.create_run(tmp_path, run_id="run")
     manifest["expected_regions"] = 1

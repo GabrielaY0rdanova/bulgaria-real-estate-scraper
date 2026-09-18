@@ -7,6 +7,8 @@
 # Run:     python -m light_scraper.main
 # =============================================================================
 
+import argparse
+import csv
 import logging
 import os
 from datetime import datetime, timezone
@@ -68,6 +70,41 @@ CSV_COLUMNS = [
     "listing_url", "source_id", "listing_tier", "transaction_type",
     "scraped_at", "status",
 ]
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Run the incremental scraper.")
+    parser.add_argument(
+        "--only",
+        choices=TRANSACTION_TYPES,
+        help="Scrape only one transaction type and emit an empty completed package for the other.",
+    )
+    return parser.parse_args()
+
+
+def initialize_empty_transaction(run_dir, manifest, transaction_type: str) -> None:
+    """Create a valid no-op package for a transaction excluded from this run."""
+    ListingRowStore(run_dir, transaction_type).export_csv(CSV_COLUMNS)
+    ActionStore(run_dir, transaction_type).export_csv()
+
+    seen_path = Path(run_dir) / f"{transaction_type}_seen_ids.csv"
+    with seen_path.open("w", encoding="utf-8-sig", newline="") as file:
+        csv.DictWriter(
+            file,
+            fieldnames=("source_id", "first_seen_at", "region_slug"),
+        ).writeheader()
+        file.flush()
+        os.fsync(file.fileno())
+
+    Pass2SelectionStore(run_dir, transaction_type).create([])
+    state = manifest["transactions"][transaction_type]
+    state["expected_regions"] = []
+    state["completed_regions"] = []
+    state["pass1_status"] = "complete"
+    state["pass2_status"] = "complete"
+    state["allow_missing_updates"] = True
+    state["status"] = "complete"
+    save_manifest(run_dir, manifest)
 
 
 # ---------------------------------------------------------------------------
@@ -850,12 +887,14 @@ def run_pass2(
 # ---------------------------------------------------------------------------
 
 def main():
+    args = parse_args()
     setup_logging()
 
     run_start = datetime.now(timezone.utc)
     logger.info(f"========== Light scraper run started at {run_start.isoformat()} ==========")
 
     progress = load_progress()
+    selected_transactions = {args.only} if args.only else set(TRANSACTION_TYPES)
     if progress:
         run_dir = Path(progress["run_dir"])
         if run_dir.name != progress["run_id"]:
@@ -863,13 +902,26 @@ def main():
         manifest = load_manifest(run_dir)
         if manifest["run_id"] != progress["run_id"]:
             raise ValueError("Progress and manifest refer to different runs")
+        if args.only and progress.get("transaction_type") != args.only:
+            raise ValueError("--only does not match the transaction in saved progress")
     else:
         run_dir, manifest = create_run(Path(OUTPUT_DIR) / "runs")
+        for transaction_type in TRANSACTION_TYPES:
+            if transaction_type not in selected_transactions:
+                initialize_empty_transaction(run_dir, manifest, transaction_type)
 
     conn = get_connection()
 
     try:
         for transaction_type in TRANSACTION_TYPES:
+
+            if transaction_type not in selected_transactions:
+                logger.info(f"Skipping excluded transaction type: {transaction_type}")
+                continue
+
+            if manifest["transactions"][transaction_type]["status"] == "complete":
+                logger.info(f"Skipping manifest-complete transaction type: {transaction_type}")
+                continue
 
             if progress and transaction_type != progress.get("transaction_type", transaction_type):
                 logger.info(f"Skipping completed transaction type: {transaction_type}")

@@ -233,6 +233,16 @@ python -m light_scraper.main
 
 Run files are written to `data/runs/<run_id>/`. Logs are written to `logs/`.
 
+To run a single transaction type for a targeted recovery, use:
+
+```bash
+python -m light_scraper.main --only naemi
+```
+
+The excluded transaction receives a valid empty no-op package, so the completed
+run remains compatible with the cleaning pipeline. Use this mode only when the
+database already contains the other transaction type in its desired state.
+
 The run is safe for downstream processing only when `manifest.json` has
 `status: "complete"`. Missing actions also require
 `allow_missing_updates: true` for the relevant transaction.
