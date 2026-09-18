@@ -126,6 +126,8 @@ def run_pass1(
             else:
                 catching_up = False
 
+        region_resume = _resume_for_region(resume, slug)
+
         logger.info(f"Pass 1 — scraping index pages: {slug} | {transaction_type}")
 
         region_capped, preflight_html = _preflight_with_html(transaction_type, slug)
@@ -133,7 +135,7 @@ def run_pass1(
         if not region_capped:
             listings = _scrape_index_pages(
                 transaction_type, region_entry,
-                resume_page=resume["page"] if resume and slug == resume["slug"] else None,
+                resume_page=region_resume["page"] if region_resume else None,
                 progress_key=slug,
                 pass_number=1,
                 output_path=output_path,
@@ -147,7 +149,7 @@ def run_pass1(
             listings = _scrape_index_pages_cascade(
                 transaction_type, region_entry,
                 price_min=price_min, price_max=price_max,
-                resume=resume,
+                resume=region_resume,
                 output_path=output_path,
                 seen_store=seen_store,
                 index_store=index_store,
@@ -266,6 +268,13 @@ def run_pass1(
         missing = compute_missing(all_scraped_ids, active_in_db)
 
     return {"all_scraped_ids": all_scraped_ids, "missing": missing}
+
+
+def _resume_for_region(resume: dict | None, region_slug: str) -> dict | None:
+    """Limit a Pass 1 checkpoint to the region that created it."""
+    if resume and resume.get("slug") == region_slug:
+        return resume
+    return None
 
 
 def _scrape_index_pages(

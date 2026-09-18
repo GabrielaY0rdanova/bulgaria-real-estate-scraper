@@ -324,6 +324,17 @@ def test_cascade_passes_resume_into_capped_property(monkeypatch):
     assert bucket_calls[0]["resume_page"] == 6
 
 
+def test_pass1_resume_is_not_reused_for_later_regions():
+    resume = {
+        "slug": "grad-burgas",
+        "property_type": "garazh-parkomyasto",
+        "page": 2,
+    }
+
+    assert light_main._resume_for_region(resume, "grad-burgas") == resume
+    assert light_main._resume_for_region(resume, "grad-sofiya") is None
+
+
 def test_pass1_output_is_deduplicated_and_completed_region_is_not_repeated(monkeypatch, tmp_path):
     run_dir, manifest = run_state.create_run(tmp_path, run_id="run")
     manifest["expected_regions"] = 1
