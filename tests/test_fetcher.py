@@ -141,6 +141,42 @@ def test_removed_detail_redirect_stops_without_soft_block_retry(monkeypatch):
     assert sleeps == []
 
 
+def test_listings_404_is_treated_as_empty_page(monkeypatch):
+    calls = []
+    sleeps = []
+
+    def fake_get(url, headers, timeout):
+        calls.append((url, headers, timeout))
+        return _response(status_code=404)
+
+    monkeypatch.setattr(fetcher.requests, "get", fake_get)
+    monkeypatch.setattr(fetcher.time, "sleep", sleeps.append)
+
+    result = fetcher.fetch_page(
+        "https://www.imot.bg/obiavi/naemi/grad-burgas/partsel",
+        page_type="listings",
+    )
+
+    assert result == ""
+    assert len(calls) == 1
+    assert sleeps == []
+
+
+def test_detail_404_remains_a_failed_refresh(monkeypatch):
+    monkeypatch.setattr(
+        fetcher.requests,
+        "get",
+        lambda url, headers, timeout: _response(status_code=404),
+    )
+
+    result = fetcher.fetch_page(
+        "https://www.imot.bg/obiava-missing-listing",
+        page_type="detail",
+    )
+
+    assert result is None
+
+
 def test_timeout_is_retried_then_returns_none(monkeypatch):
     calls = []
     sleeps = []

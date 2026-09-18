@@ -112,8 +112,15 @@ def fetch_page(
                 logger.warning(f"403 Forbidden — possibly blocked. URL: {url}")
                 return None
 
-            # Page not found
+            # An unsupported or empty listings category can legitimately return
+            # 404. Treat it as an empty result page so the scan unit can finish
+            # cleanly. A missing detail page must still remain due for refresh.
             if response.status_code == 404:
+                if page_type == "listings":
+                    logger.info(
+                        f"404 Not Found for listings page — treating as empty. URL: {url}"
+                    )
+                    return ""
                 logger.warning(f"404 Not Found — skipping. URL: {url}")
                 return None
 
