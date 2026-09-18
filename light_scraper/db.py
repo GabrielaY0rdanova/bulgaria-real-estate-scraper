@@ -26,6 +26,7 @@ _LOCALITY_TYPE_TO_RAW = {
     "city": "град",
     "village": "село",
     "resort_complex": "к.к.",
+    "campground": "к-г",
     "area": "м-т",
     "highway": "магистрала",
     "reservoir": "яз.",
