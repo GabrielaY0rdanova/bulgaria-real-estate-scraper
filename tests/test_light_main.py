@@ -199,6 +199,34 @@ def test_failed_pass2_detail_is_not_saved_as_refreshed(monkeypatch, tmp_path):
     assert manifest["transactions"]["prodazhbi"]["pass2"]["rejected"] == 1
 
 
+def test_resumed_pass2_repairs_row_without_matching_action(monkeypatch, tmp_path):
+    run_dir, manifest = run_state.create_run(tmp_path, run_id="run")
+    selected = [{
+        "source_id": "interrupted-row",
+        "listing_id": 17,
+        "listing_url": "https://example.test/interrupted",
+        "property_type": "КЪЩА",
+        "locality": "София",
+        "price": 150000,
+        "scraped_at": "2026-09-17T08:00:00+00:00",
+    }]
+    run_state.Pass2SelectionStore(run_dir, "prodazhbi").create(selected)
+    run_state.ListingRowStore(run_dir, "prodazhbi").upsert(selected)
+
+    monkeypatch.setattr(light_main, "save_progress_pass2", lambda *_args, **_kwargs: None)
+
+    light_main.run_pass2(
+        object(), str(run_dir / "prodazhbi_rows.csv"), "prodazhbi",
+        resume_index=1, run_dir=run_dir, manifest=manifest,
+    )
+
+    actions = run_state.ActionStore(run_dir, "prodazhbi").actions
+    assert actions["interrupted-row"]["action"] == "refreshed"
+    assert actions["interrupted-row"]["listing_id"] == 17
+    assert actions["interrupted-row"]["old_price"] == 150000
+    assert actions["interrupted-row"]["new_price"] == 150000
+
+
 def test_nested_price_bucket_keeps_resume_page(monkeypatch):
     page_calls = []
 

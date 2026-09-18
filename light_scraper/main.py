@@ -636,6 +636,49 @@ def enrich_with_detail(listings: list[dict], workers: int = 3) -> list[dict]:
 # Pass 2 — Rolling detail refresh
 # ---------------------------------------------------------------------------
 
+
+def _repair_pass2_action_gaps(row_store, action_store, listings_to_refresh) -> int:
+    """Restore refresh actions written incompletely before an interruption.
+
+    A process can stop after the durable listing row append but before the
+    matching action append. The Pass 2 checkpoint then still points past that
+    listing on a later resume. Recreate only actions that belong to the fixed
+    Pass 2 selection. Pass 1 rows are deliberately left untouched because
+    their new/changed classification cannot be inferred here.
+    """
+    selected_ids = {
+        str(listing.get("source_id") or "").strip()
+        for listing in listings_to_refresh
+    }
+    missing_ids = sorted(
+        selected_ids.intersection(row_store.rows).difference(action_store.actions)
+    )
+    if not missing_ids:
+        return 0
+
+    recovered = []
+    for source_id in missing_ids:
+        listing = row_store.rows[source_id]["listing"]
+        recovered.append({
+            "source_id": source_id,
+            "listing_id": listing.get("listing_id"),
+            "action": "refreshed",
+            "old_price": listing.get("price"),
+            "new_price": listing.get("price"),
+            "observed_at": (
+                listing.get("scraped_at")
+                or datetime.now(timezone.utc).isoformat()
+            ),
+        })
+
+    action_store.upsert(recovered)
+    logger.warning(
+        "Pass 2 — restored %s missing refresh actions from durable rows.",
+        len(recovered),
+    )
+    return len(recovered)
+
+
 def run_pass2(
     conn,
     output_path: str,
@@ -673,6 +716,13 @@ def run_pass2(
         )
         if selection_store:
             listings_to_refresh = selection_store.create(listings_to_refresh)
+
+    if row_store and action_store:
+        _repair_pass2_action_gaps(
+            row_store,
+            action_store,
+            listings_to_refresh,
+        )
 
     total = len(listings_to_refresh)
     logger.info(f"Pass 2 — refreshing {total:,} listings.")
