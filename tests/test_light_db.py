@@ -110,3 +110,28 @@ def test_pass2_price_on_request_and_nullable_values():
     assert listing["features"] is None
     assert listing["poster_type"] == "собственик"
     assert listing["transaction_type"] == "naemi"
+
+
+def test_pass2_query_can_limit_selection_to_ids_seen_in_current_run():
+    row = (
+        "seen-1", 42, "https://example.test/1", None, Decimal("100000"), False,
+        None, None, True, datetime(2026, 7, 1), "2-СТАЕН", 1,
+        Decimal("60"), 2, 6, "Тухла", "completed", 2015, False,
+        "no_district_heating", "agency", "Agency", "+359", "София",
+        "София", "city", None, "",
+    )
+    conn = FakeConnection(row)
+
+    db.fetch_pass2_listings(
+        conn,
+        "prodazhbi",
+        exclude_ids={"changed-1"},
+        eligible_ids={"seen-2", "seen-1"},
+    )
+
+    count_query, count_params = conn.cursor_instance.executions[0]
+    select_query, select_params = conn.cursor_instance.executions[1]
+    assert "source_id = ANY(%s::text[])" in count_query
+    assert "source_id = ANY(%s::text[])" in select_query
+    assert count_params == ("sale", ["seen-1", "seen-2"], ["changed-1"])
+    assert select_params == ("sale", ["seen-1", "seen-2"], ["changed-1"], 1)

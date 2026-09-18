@@ -137,6 +137,7 @@ def fetch_pass2_listings(
     conn,
     transaction_type: str,
     exclude_ids: set[str] | None = None,
+    eligible_ids: set[str] | None = None,
 ) -> list[dict]:
     """
     Fetch the oldest 5% of eligible active listings by date_last_checked.
@@ -146,16 +147,31 @@ def fetch_pass2_listings(
     """
     cursor = conn.cursor()
     excluded = sorted(exclude_ids or set())
-    cursor.execute("""
+    eligible = sorted(eligible_ids) if eligible_ids is not None else None
+    eligible_filter = (
+        "AND source_id = ANY(%s::text[])"
+        if eligible is not None
+        else ""
+    )
+    count_params = [_TX_TO_ENUM[transaction_type]]
+    if eligible is not None:
+        count_params.append(eligible)
+    count_params.append(excluded)
+    cursor.execute(f"""
         SELECT CEIL(COUNT(*) * 0.05)::int
         FROM listings
         WHERE status = 'active'
           AND transaction_type = %s
+          {eligible_filter}
           AND NOT (source_id = ANY(%s::text[]))
-    """, (_TX_TO_ENUM[transaction_type], excluded))
+    """, tuple(count_params))
     limit = cursor.fetchone()[0]
 
-    cursor.execute("""
+    select_params = [_TX_TO_ENUM[transaction_type]]
+    if eligible is not None:
+        select_params.append(eligible)
+    select_params.extend([excluded, limit])
+    cursor.execute(f"""
         SELECT
             l.source_id,
             l.listing_id,
@@ -214,6 +230,7 @@ def fetch_pass2_listings(
         LEFT JOIN features f ON f.feature_id = pf.feature_id
         WHERE l.status = 'active'
           AND l.transaction_type = %s
+          {eligible_filter}
           AND NOT (l.source_id = ANY(%s::text[]))
         GROUP BY
             l.source_id, l.listing_id, l.listing_url, l.listing_tier, l.price,
@@ -227,7 +244,7 @@ def fetch_pass2_listings(
             gpp.level, gpp.name_bg, gpp.locality_type
         ORDER BY l.date_last_checked ASC, l.source_id ASC
         LIMIT %s
-    """, (_TX_TO_ENUM[transaction_type], excluded, limit))
+    """, tuple(select_params))
     rows = cursor.fetchall()
     cursor.close()
 

@@ -660,10 +660,16 @@ def run_pass2(
         logger.info("Pass 2 — restored fixed selection from run files.")
     else:
         exclude_ids = set(row_store.rows) if row_store else set()
+        eligible_ids = (
+            SeenIdStore(run_dir, transaction_type).ids
+            if run_dir
+            else None
+        )
         listings_to_refresh = fetch_pass2_listings(
             conn,
             transaction_type,
             exclude_ids=exclude_ids,
+            eligible_ids=eligible_ids,
         )
         if selection_store:
             listings_to_refresh = selection_store.create(listings_to_refresh)

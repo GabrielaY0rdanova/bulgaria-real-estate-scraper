@@ -370,10 +370,15 @@ def test_pass2_selection_is_fixed_and_excludes_pass1_rows(monkeypatch, tmp_path)
         "price": 200000,
         "scraped_at": "2026-09-17T08:00:00+00:00",
     }]
-    exclusions = []
+    selections = []
 
-    def fetch_selection(_conn, _transaction_type, exclude_ids=None):
-        exclusions.append(exclude_ids)
+    def fetch_selection(
+        _conn,
+        _transaction_type,
+        exclude_ids=None,
+        eligible_ids=None,
+    ):
+        selections.append((exclude_ids, eligible_ids))
         return [row.copy() for row in selected]
 
     monkeypatch.setattr(light_main, "fetch_pass2_listings", fetch_selection)
@@ -386,7 +391,7 @@ def test_pass2_selection_is_fixed_and_excludes_pass1_rows(monkeypatch, tmp_path)
         run_dir=run_dir, manifest=manifest,
     )
 
-    assert exclusions == [{"pass1-id"}]
+    assert selections == [({"pass1-id"}, set())]
     assert run_state.Pass2SelectionStore(run_dir, "prodazhbi").load() == selected
 
     def fail_if_queried(*_args, **_kwargs):

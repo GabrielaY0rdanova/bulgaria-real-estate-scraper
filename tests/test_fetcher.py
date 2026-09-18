@@ -5,8 +5,11 @@ import requests
 from scraper import fetcher
 
 
-def _response(status_code=200, html=""):
-    return SimpleNamespace(status_code=status_code, text=html, encoding=None)
+def _response(status_code=200, html="", url=None):
+    response = SimpleNamespace(status_code=status_code, text=html, encoding=None)
+    if url is not None:
+        response.url = url
+    return response
 
 
 def _large_html(marker):
@@ -105,6 +108,32 @@ def test_soft_block_after_partial_page_stops_immediately(monkeypatch):
         "https://example.test/listings",
         page_type="listings",
         last_page_was_partial=True,
+    )
+
+    assert result is None
+    assert len(calls) == 1
+    assert sleeps == []
+
+
+def test_removed_detail_redirect_stops_without_soft_block_retry(monkeypatch):
+    html = _large_html('<div class="SearchInfoLine">listings</div>')
+    response = _response(
+        html=html,
+        url="https://www.imot.bg/obiavi/prodazhbi/ednostaen",
+    )
+    calls = []
+    sleeps = []
+
+    def fake_get(url, headers, timeout):
+        calls.append((url, headers, timeout))
+        return response
+
+    monkeypatch.setattr(fetcher.requests, "get", fake_get)
+    monkeypatch.setattr(fetcher.time, "sleep", sleeps.append)
+
+    result = fetcher.fetch_page(
+        "https://www.imot.bg/obiava-removed-listing",
+        page_type="detail",
     )
 
     assert result is None

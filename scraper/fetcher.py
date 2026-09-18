@@ -4,6 +4,7 @@ import requests
 import time
 import logging
 import threading
+from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 
@@ -65,6 +66,13 @@ def _is_valid_content(html: str, page_type: str | None) -> bool:
     return True
 
 
+def _is_unavailable_detail_redirect(requested_url: str, final_url: str) -> bool:
+    """Return True when a removed detail page redirects to a listings page."""
+    requested_path = urlparse(requested_url).path
+    final_path = urlparse(final_url).path
+    return requested_path.startswith("/obiava-") and final_path.startswith("/obiavi/")
+
+
 def fetch_page(
     url: str,
     page_type: str | None = None,
@@ -120,6 +128,17 @@ def fetch_page(
                 logger.warning(f"Unexpected status {response.status_code} (attempt {attempt}/{MAX_RETRIES}). Waiting {RETRY_DELAY}s...")
                 time.sleep(RETRY_DELAY)
                 continue
+
+            final_url = getattr(response, "url", url)
+            if (
+                page_type == "detail"
+                and _is_unavailable_detail_redirect(url, final_url)
+            ):
+                logger.info(
+                    "Detail listing unavailable — redirected to listings page: "
+                    f"{url} -> {final_url}"
+                )
+                return None
 
             # Force Windows-1251 encoding before any .text access
             response.encoding = "windows-1251"

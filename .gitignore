@@ -1,6 +1,8 @@
 # Runtime state
 progress.json
 watcher_state.json
+light_scraper_progress.json
+light_watcher_state.json
 
 # Output data
 data/
@@ -11,6 +13,7 @@ logs/
 
 # Python
 __pycache__/
+.pytest_cache/
 *.pyc
 *.pyo
 
