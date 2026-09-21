@@ -27,7 +27,9 @@ Part of a larger **Real Estate Data Platform**: [`real_estate_scraper`](https://
 | `prodazhbi_05_05_2026.csv` | 45,186 | Sales | Incremental update |
 | `naemi_07_05_2026.csv` | 19,038 | Rentals | Incremental update |
 
-Combined dataset: **263,720 rows** across 2,948 unique settlements and 46 property types.
+These files document the first two published collection periods. Later raw runs
+remain append-only in Kaggle, while the PostgreSQL history reached 351,188 unique
+listings after the September 2026 catch-up and rental recovery updates.
 
 The dataset is published on Kaggle: [Bulgaria Real Estate Listings](https://www.kaggle.com/datasets/gabrielagencheva/bulgaria-real-estate-listings)
 
@@ -110,7 +112,7 @@ The platform uses two complementary scrapers:
 | | Full Scraper (`main.py`) | Light Scraper (`light_scraper/main.py`) |
 |---|---|---|
 | **Purpose** | Initial full dataset collection | Incremental updates after the full scrape |
-| **Runtime** | ~84 hours for the original collection | Depends on monthly change volume; measure from the next complete run |
+| **Runtime** | ~84 hours for the original collection | Depends on change volume. The verified rental-only recovery run completed in 4h 16m |
 | **Approach** | Scrapes all regions, all pages, all listings | Two-pass: index-only comparison + rolling detail refresh |
 | **DB required** | No — writes flat CSV only | Yes — compares against PostgreSQL to detect changes |
 | **Output** | Raw CSV files | Run manifest, seen IDs, action files, and deduplicated rows for new, changed, reappeared, and refreshed listings |
@@ -160,7 +162,7 @@ Each row represents one listing at the time of scraping.
 | `has_photos` | bool | Whether listing has photos |
 | `agency_phone` | string | Populated for agencies only (GDPR — private individual phones never collected) |
 | `listing_url` | string | Full URL to the listing (192,007 unique) |
-| `source_id` | string | imot.bg's own listing ID (192,004 unique) |
+| `source_id` | string | imot.bg's listing identifier, used as the durable update key |
 | `listing_tier` | string | `"VIP"`, `"TOP"`, or `"BEST"`; `None` for standard listings |
 | `transaction_type` | string | `"prodazhbi"` (sales) or `"naemi"` (rentals) |
 | `scraped_at` | string | UTC ISO timestamp of when the listing was scraped |
@@ -243,6 +245,11 @@ The excluded transaction receives a valid empty no-op package, so the completed
 run remains compatible with the cleaning pipeline. Use this mode only when the
 database already contains the other transaction type in its desired state.
 
+The September 2026 rental recovery run used this mode after an earlier incomplete
+rental scan. It completed all 54 regions, saved 27,719 Pass 1 rows, refreshed 520
+additional listings in Pass 2, recorded no fetch failures and produced a complete
+manifest. The cleaning pipeline then applied 28,267 effective actions atomically.
+
 The run is safe for downstream processing only when `manifest.json` has
 `status: "complete"`. Missing actions also require
 `allow_missing_updates: true` for the relevant transaction.
@@ -294,7 +301,7 @@ All parameters live in `config.py`:
 - **Duplicate sightings** — the full scraper can contain repeated sightings that cleaning deduplicates. The light scraper deduplicates its seen IDs, output rows and effective actions by `source_id` within each transaction run.
 - **`area` field contains mixed sub-settlement types** — city-level slugs can produce values like `"м-ст Акчелар"`, `"в.з. Траката"`, `"к.к. Слънчев бряг"` alongside plain neighbourhood names like `"Център"`. Actual settlements misplaced here (`с.`/`гр.` prefix) are reclassified into `locality`/`locality_type` at scrape time. The prefix-based split into `area_name` + `area_type` is handled in `real_estate_cleaning`.
 - **`last_page_was_partial` guard** — if imot.bg throttles mid-session and serves an incomplete page, a small number of listings may be missed. Acceptable tradeoff given the site's behaviour.
-- **Full re-scrape vs incremental** — the initial full run took about 84 hours. The July light run took about 46 hours across interrupted sessions. The repaired implementation removes duplicate work and reuses HTTP connections, but its new runtime must be measured during the next complete run. A regular monthly run is expected to be much shorter than a catch-up run after several missed months.
+- **Full re-scrape vs incremental.** The initial full run took about 84 hours. The July light run took about 46 hours across interrupted sessions. A September catch-up run covered both transaction types, followed by a targeted rental recovery that took 4 hours and 16 minutes. Runtime depends mainly on how many new, changed and reappeared listings require detail-page enrichment.
 - **Legal & ethics** — `robots.txt` Disallow is empty ✅, Terms of Service contain no scraping prohibition ✅, and a 1-second delay is applied between all requests. Agency phone numbers only — private individual phones are never collected (GDPR).
 
 
