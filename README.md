@@ -1,6 +1,6 @@
-# 🏗️ Bulgaria Real Estate Scraper
+# Bulgaria Real Estate Scraper
 
-## 🏷️ Project Badges
+## Project Badges
 
 [![Python](https://img.shields.io/badge/Python-3.11-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![BeautifulSoup](https://img.shields.io/badge/BeautifulSoup-4-green?logo=python&logoColor=white)](https://www.crummy.com/software/BeautifulSoup/)
@@ -8,17 +8,17 @@
 [![License](https://img.shields.io/badge/License-MIT-lightgrey)](LICENSE.txt)
 
 
-## 📖 Overview
+## Overview
 
 A modular Python scraper for [imot.bg](https://www.imot.bg), Bulgaria's largest real estate portal.
 Collects property listings across all 54 Bulgarian regions (27 administrative regions + 27 major cities) for both sales and rentals,
 enriching each listing with detail-page data including construction type, year built, utilities, and features.
 Outputs flat CSV files ready for downstream cleaning and analysis.
 
-Part of a larger **Real Estate Data Platform**: [`real_estate_scraper`](https://github.com/GabrielaY0rdanova/bulgaria-real-estate-scraper) → [`real_estate_cleaning`](https://github.com/GabrielaY0rdanova/bulgaria-real-estate-cleaning) → [`real_estate_analysis`](https://github.com/GabrielaY0rdanova/bulgaria-real-estate-analysis) → `real_estate_visualization`
+Part of a larger **Real Estate Data Platform**: [`real_estate_scraper`](https://github.com/GabrielaY0rdanova/bulgaria-real-estate-scraper) to [`real_estate_cleaning`](https://github.com/GabrielaY0rdanova/bulgaria-real-estate-cleaning) to [`real_estate_analysis`](https://github.com/GabrielaY0rdanova/bulgaria-real-estate-analysis) to `real_estate_visualization`
 
 
-## 📊 Dataset
+## Dataset
 
 | File | Rows | Transaction type | Run |
 |---|---|---|---|
@@ -34,12 +34,12 @@ listings after the September 2026 catch-up and rental recovery updates.
 The dataset is published on Kaggle: [Bulgaria Real Estate Listings](https://www.kaggle.com/datasets/gabrielagencheva/bulgaria-real-estate-listings)
 
 
-## 🗂️ Project Structure
+## Project Structure
 
 ```
 real_estate_scraper/
 │
-├── main.py                     # Full scraper — cascade logic, CSV output, resume
+├── main.py                     # Full scraper: cascade logic, CSV output, resume
 ├── config.py                   # All scraping parameters, headers, price ranges
 ├── regions.py                  # 54 Bulgarian regions (slug + name)
 ├── requirements.txt
@@ -67,7 +67,7 @@ real_estate_scraper/
 │   └── progress.py             # Resume state (read/write progress.json)
 │
 └── light_scraper/
-    ├── main.py                 # Incremental scraper — two-pass architecture
+    ├── main.py                 # Incremental scraper: two-pass architecture
     ├── comparator.py           # Classifies listings: new / changed / unchanged / reappeared / missing
     ├── db.py                   # PostgreSQL queries for active/inactive listing lookups
     ├── progress.py             # Resume state for light scraper runs
@@ -75,11 +75,11 @@ real_estate_scraper/
 ```
 
 
-## 🏗️ Architecture
+## Architecture
 
 ### Two-Layer Scraping
 
-Each listing requires two HTTP requests — one to the index page and one to the detail page:
+Each listing requires two HTTP requests: one to the index page and one to the detail page:
 
 | Layer | Source | Fields collected |
 |---|---|---|
@@ -91,19 +91,19 @@ Each listing requires two HTTP requests — one to the index page and one to the
 imot.bg caps search results at 1,000 listings per URL. The scraper handles this automatically with a three-level cascade:
 
 ```
-Level 1 — /prodazhbi/oblast-sofiya
+Level 1: /prodazhbi/oblast-sofiya
            ↓ if capped (1000+ results)
-Level 2 — /prodazhbi/oblast-sofiya/dvustaen      (split by property type)
+Level 2: /prodazhbi/oblast-sofiya/dvustaen      (split by property type)
            ↓ if still capped
-Level 3 — /prodazhbi/oblast-sofiya/dvustaen?price_min=0&price_max=500000
+Level 3: /prodazhbi/oblast-sofiya/dvustaen?price_min=0&price_max=500000
            ↓ binary price split until each bucket is under cap
 ```
 
-Before scraping any URL, a **pre-flight check** fetches page 1 and inspects the result count — determining which cascade level to start at and avoiding duplicate scraping entirely.
+Before scraping any URL, a **pre-flight check** fetches page 1 and inspects the result count: determining which cascade level to start at and avoiding duplicate scraping entirely.
 
 ### Resume Support
 
-After each page is saved, `progress.json` records the current position (transaction type, region, property type, price bucket, page number). On restart, the scraper picks up exactly where it left off — no data is re-scraped or lost.
+After each page is saved, `progress.json` records the current position (transaction type, region, property type, price bucket, page number). On restart, the scraper picks up exactly where it left off: no data is re-scraped or lost.
 
 ### Two-Scraper Architecture
 
@@ -114,28 +114,28 @@ The platform uses two complementary scrapers:
 | **Purpose** | Initial full dataset collection | Incremental updates after the full scrape |
 | **Runtime** | ~84 hours for the original collection | Depends on change volume. The verified rental-only recovery run completed in 4h 16m |
 | **Approach** | Scrapes all regions, all pages, all listings | Two-pass: index-only comparison + rolling detail refresh |
-| **DB required** | No — writes flat CSV only | Yes — compares against PostgreSQL to detect changes |
+| **DB required** | No: writes flat CSV only | Yes: compares against PostgreSQL to detect changes |
 | **Output** | Raw CSV files | Run manifest, seen IDs, action files, and deduplicated rows for new, changed, reappeared, and refreshed listings |
 
-**Light scraper — two-pass design:**
+**Light scraper: two-pass design:**
 
-- **Pass 1** — scrapes index pages only (no detail fetches), compares each listing against the DB by `source_id` and price, and classifies it as new, changed, unchanged, reappeared, or missing. Only new, changed, and reappeared listings get a detail page fetch.
-- **Pass 2** — creates and persists a fixed selection from the oldest 5% of eligible active listings. It excludes listings already handled in Pass 1 and re-fetches detail pages to detect changes that price alone cannot reveal.
+- **Pass 1**: scrapes index pages only (no detail fetches), compares each listing against the DB by `source_id` and price, and classifies it as new, changed, unchanged, reappeared, or missing. Only new, changed, and reappeared listings get a detail page fetch.
+- **Pass 2**: creates and persists a fixed selection from the oldest 5% of eligible active listings. It excludes listings already handled in Pass 1 and re-fetches detail pages to detect changes that price alone cannot reveal.
 
 Each light-scraper run has an immutable UTC run ID and writes its files to `data/runs/<run_id>/`. Page data reaches durable staging files before the resume checkpoint advances. If Pass 1 is incomplete, Pass 2 and missing-listing updates are blocked.
 
 
-## 🔄 Scraping Workflow
+## Scraping Workflow
 
-1. **Pre-flight check** — fetch page 1, detect whether the result count is capped
-2. **Level 1 scrape** — if under cap, scrape the region slug directly
-3. **Level 2 split** — if capped, pre-flight each property type; scrape those under cap normally
-4. **Level 3 split** — if a property type is still capped, binary-search the price range until each bucket fits
-5. **Detail enrichment** — for each listing, visit the detail URL and merge additional fields
-6. **Validate & save** — validate required fields, append valid rows to CSV, save progress
+1. **Pre-flight check**: fetch page 1, detect whether the result count is capped
+2. **Level 1 scrape**: if under cap, scrape the region slug directly
+3. **Level 2 split**: if capped, pre-flight each property type; scrape those under cap normally
+4. **Level 3 split**: if a property type is still capped, binary-search the price range until each bucket fits
+5. **Detail enrichment**: for each listing, visit the detail URL and merge additional fields
+6. **Validate & save**: validate required fields, append valid rows to CSV, save progress
 
 
-## 🗃️ Data Schema
+## Data Schema
 
 Each row represents one listing at the time of scraping.
 
@@ -143,10 +143,10 @@ Each row represents one listing at the time of scraping.
 |---|---|---|
 | `region` | string | Bulgarian administrative region e.g. `"София"`, `"Варна"` (27 unique values) |
 | `locality` | string | Settlement name e.g. `"Варна"`, `"Банско"` (2,948 unique values) |
-| `locality_type` | string | `"град"`, `"село"`, or raw prefix like `"к.к."` — standardised downstream |
+| `locality_type` | string | `"град"`, `"село"`, or raw prefix like `"к.к."`: standardised downstream |
 | `area` | string | Sub-area within a city e.g. `"Център"`, `"Малинова долина"`; `None` for oblast slugs |
 | `property_type` | string | Raw site value e.g. `"3-СТАЕН"`, `"ПАРЦЕЛ"`, `"КЪЩА"` (46 unique values) |
-| `bedrooms` | int | Always `None` at scrape time — extracted from `property_type` downstream |
+| `bedrooms` | int | Always `None` at scrape time: extracted from `property_type` downstream |
 | `poster_type` | string | `"агенция"` (94%) or `"собственик"` (6%) |
 | `agency_name` | string | Agency name if poster is an agency (3,841 unique agencies) |
 | `price` | string | Raw e.g. `"89 990 €"`; `None` if price on request |
@@ -155,21 +155,21 @@ Each row represents one listing at the time of scraping.
 | `construction_type` | string | e.g. `"Тухла"`, `"Панел"`, `"Гредоред"`, `"ЕПК"` |
 | `construction_status` | string | e.g. `"Въведен в експлоатация"`, `"Ще бъде въведен в експлоатация"` |
 | `year_built` | int | 4-digit year (range: 1920–2040) |
-| `gas` / `tec` | string | `"ДА"` or `"НЕ"` — standardised downstream |
+| `gas` / `tec` | string | `"ДА"` or `"НЕ"`: standardised downstream |
 | `features` | string | Comma-separated list e.g. `"Асансьор, Обзаведен"` |
-| `date_posted` | string | Raw string e.g. `"Публикувана в 15:55 на 6 април, 2026 год."` — parsed downstream |
-| `date_modified` | string | Raw string e.g. `"Коригирана в 15:58 на 25 март, 2026 год."` — parsed downstream |
+| `date_posted` | string | Raw string e.g. `"Публикувана в 15:55 на 6 април, 2026 год."`: parsed downstream |
+| `date_modified` | string | Raw string e.g. `"Коригирана в 15:58 на 25 март, 2026 год."`: parsed downstream |
 | `has_photos` | bool | Whether listing has photos |
-| `agency_phone` | string | Populated for agencies only (GDPR — private individual phones never collected) |
+| `agency_phone` | string | Populated for agencies only (GDPR: private individual phones never collected) |
 | `listing_url` | string | Full URL to the listing (192,007 unique) |
 | `source_id` | string | imot.bg's listing identifier, used as the durable update key |
 | `listing_tier` | string | `"VIP"`, `"TOP"`, or `"BEST"`; `None` for standard listings |
 | `transaction_type` | string | `"prodazhbi"` (sales) or `"naemi"` (rentals) |
 | `scraped_at` | string | UTC ISO timestamp of when the listing was scraped |
-| `status` | string | Always `"active"` at scrape time — updated in `real_estate_cleaning` |
+| `status` | string | Always `"active"` at scrape time: updated in `real_estate_cleaning` |
 
 
-## 🚀 How to Run
+## How to Run
 
 ### 1. Clone and set up environment
 
@@ -192,7 +192,7 @@ Output CSVs are written to `data/`. Logs are written to `logs/`.
 ### 3. Pause and resume
 
 Stop the scraper at any time (Ctrl+C or machine shutdown) and restart with the same command.
-It detects `progress.json` automatically and continues from where it left off — no data is re-scraped or lost.
+It detects `progress.json` automatically and continues from where it left off: no data is re-scraped or lost.
 
 ### 4. Monitoring (optional)
 
@@ -212,7 +212,7 @@ python monitoring/log_watcher.py
 The watcher sends real-time Telegram messages for each region start/finish, pre-flight results, per-type scraping progress, fetch failures, and a final run summary.
 
 
-## 🔄 Running the Light Scraper (Incremental Updates)
+## Running the Light Scraper (Incremental Updates)
 
 Run the light scraper after the cleaning pipeline has loaded data into PostgreSQL.
 
@@ -280,7 +280,7 @@ python -m light_scraper.log_watcher
 The watcher sends real-time Telegram messages for each region, Pass 1 classification results (new / changed / reappeared / unchanged), Pass 2 progress, fetch failures, and a final run summary.
 
 
-## ⚙️ Configuration
+## Configuration
 
 All parameters live in `config.py`:
 
@@ -295,46 +295,27 @@ All parameters live in `config.py`:
 | `NAEMI_PRICE_MAX` | `10,000` | Upper price bound for rentals (EUR) |
 
 
-## 💡 Notes
+## Notes
 
-- **`date_modified` unreliable** — imot.bg updates this field on internal re-indexing events, not just user edits. Do not use as a change detection signal.
-- **Duplicate sightings** — the full scraper can contain repeated sightings that cleaning deduplicates. The light scraper deduplicates its seen IDs, output rows and effective actions by `source_id` within each transaction run.
-- **`area` field contains mixed sub-settlement types** — city-level slugs can produce values like `"м-ст Акчелар"`, `"в.з. Траката"`, `"к.к. Слънчев бряг"` alongside plain neighbourhood names like `"Център"`. Actual settlements misplaced here (`с.`/`гр.` prefix) are reclassified into `locality`/`locality_type` at scrape time. The prefix-based split into `area_name` + `area_type` is handled in `real_estate_cleaning`.
-- **`last_page_was_partial` guard** — if imot.bg throttles mid-session and serves an incomplete page, a small number of listings may be missed. Acceptable tradeoff given the site's behaviour.
+- **`date_modified` unreliable**: imot.bg updates this field on internal re-indexing events, not just user edits. Do not use as a change detection signal.
+- **Duplicate sightings**: the full scraper can contain repeated sightings that cleaning deduplicates. The light scraper deduplicates its seen IDs, output rows and effective actions by `source_id` within each transaction run.
+- **`area` field contains mixed sub-settlement types**: city-level slugs can produce values like `"м-ст Акчелар"`, `"в.з. Траката"`, `"к.к. Слънчев бряг"` alongside plain neighbourhood names like `"Център"`. Actual settlements misplaced here (`с.`/`гр.` prefix) are reclassified into `locality`/`locality_type` at scrape time. The prefix-based split into `area_name` + `area_type` is handled in `real_estate_cleaning`.
+- **`last_page_was_partial` guard**: if imot.bg throttles mid-session and serves an incomplete page, a small number of listings may be missed. Acceptable tradeoff given the site's behaviour.
 - **Full re-scrape vs incremental.** The initial full run took about 84 hours. The July light run took about 46 hours across interrupted sessions. A September catch-up run covered both transaction types, followed by a targeted rental recovery that took 4 hours and 16 minutes. Runtime depends mainly on how many new, changed and reappeared listings require detail-page enrichment.
-- **Legal & ethics** — `robots.txt` Disallow is empty ✅, Terms of Service contain no scraping prohibition ✅, and a 1-second delay is applied between all requests. Agency phone numbers only — private individual phones are never collected (GDPR).
+- **Legal & ethics**: `robots.txt` Disallow is empty , Terms of Service contain no scraping prohibition , and a 1-second delay is applied between all requests. Agency phone numbers only: private individual phones are never collected (GDPR).
 
 
-## 🛠️ Technologies Used
+## Technologies
 
 - **Python 3.11**
-- **requests** — HTTP fetching with retry logic
-- **BeautifulSoup4** — HTML parsing
-- **csv** — incremental, crash-safe CSV output
-- **logging** — structured file + console logging
-- **python-dotenv** — Telegram credentials management
-- **openpyxl** — per-region ETA estimates from Excel
+- **requests**: HTTP fetching with retry logic
+- **BeautifulSoup4**: HTML parsing
+- **csv**: incremental, crash-safe CSV output
+- **logging**: structured file + console logging
+- **python-dotenv**: Telegram credentials management
+- **openpyxl**: per-region ETA estimates from Excel
 
 
-## 🚀 Upcoming Projects
-
-This scraper is Stage 1 of a four-stage data platform:
-
-- ✅ `bulgaria-real-estate-scraper` — You are here
-- ✅ `bulgaria-real-estate-cleaning` — Deduplication, field parsing and normalisation, PostgreSQL load
-- ✅ `bulgaria-real-estate-analysis` — Price distributions, geographic patterns, and feature uplift analysis
-- ✅ `bulgaria-real-estate-visualization` — Interactive Power BI dashboard
-
-
-## 👩‍💻 About Me
-
-Hi! I'm [Gabriela Yordanova](https://www.linkedin.com/in/gabriela-yordanova-837ba2124/). Check out my full portfolio 🗂️ [here](https://gabrielay0rdanova.github.io/).
-
-Having worked as a real estate agent across multiple agencies for nearly 3 years, I know how imot.bg listings are structured, what the tiers mean, and why certain fields are unreliable — which shaped every design decision in this scraper.
-
-This project is Stage 1 of a four-stage **Real Estate Data Platform** I'm building end-to-end. It includes two scrapers: a full scraper handling cascade cap logic, resume support, and detail-page enrichment across 263,000+ listings, and a light scraper for incremental updates with DB-backed change detection — demonstrating my skills in **Python, web scraping, and resilient pipeline design**.
-
-
-## 🛡️ License
+## License
 
 This project is licensed under the [MIT License](LICENSE.txt) and is available for educational and portfolio purposes.
